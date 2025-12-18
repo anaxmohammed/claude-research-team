@@ -14,6 +14,15 @@
   <a href="https://docs.anthropic.com/claude-code"><img src="https://img.shields.io/badge/powered%20by-Claude%20Agent%20SDK-orange" alt="Claude Agent SDK"></a>
 </p>
 
+<p align="center">
+  <a href="#what-is-this">What is This?</a> •
+  <a href="#search-engines--tools">Tools</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#how-it-works">How It Works</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
 ---
 
 ## What is This?
@@ -99,6 +108,34 @@ Don't have claude-mem? That's fine — the plugin works standalone too, but you'
 - **Deep claude-mem Integration** — Research persists across sessions in shared database
 - **Full-Text Search** — SQLite FTS5 enables fast search across all research
 - **Plugin Architecture** — Install as a Claude Code plugin with hooks and skills
+
+---
+
+## Search Engines & Tools
+
+### Built-in (Always Available)
+
+| Tool | Purpose | Cost |
+|------|---------|------|
+| **Claude Agent SDK** | AI synthesis & summarization | Uses your Anthropic API key |
+| **Jina Reader** | Web page scraping & content extraction | Free, unlimited |
+| **SQLite + FTS5** | Local storage with full-text search | Free, built-in |
+
+### Search APIs (Configure at least one)
+
+| Provider | What It Does | Free Tier | Sign Up |
+|----------|--------------|-----------|---------|
+| **Serper** ⭐ | Google search results (recommended) | 2,500 queries/month | [serper.dev](https://serper.dev) |
+| **Brave** | Privacy-focused web search | 2,000 queries/month | [brave.com/search/api](https://brave.com/search/api) |
+| **Tavily** | AI-optimized search results | 1,000 queries/month | [tavily.com](https://tavily.com) |
+
+**How search works:**
+1. Tries Serper first (if configured) — most reliable Google results
+2. Falls back to Brave (if configured) — privacy-focused alternative
+3. Falls back to Tavily (if configured) — AI-optimized results
+4. Results are deduplicated across all engines
+
+**You need at least one search API key** — without it, the research crew can't search the web. Serper is recommended for the best results.
 
 ---
 
