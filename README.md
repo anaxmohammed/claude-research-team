@@ -1,10 +1,18 @@
-# Claude Research Team
+<p align="center">
+  <img src="assets/logo.png" alt="Claude Research Team" width="200">
+</p>
 
-**Autonomous research agents for Claude Code — passively research and inject helpful context**
+<h1 align="center">Claude Research Team</h1>
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)](https://nodejs.org)
-[![Claude Agent SDK](https://img.shields.io/badge/powered%20by-Claude%20Agent%20SDK-orange)](https://docs.anthropic.com/claude-code)
+<p align="center">
+  <strong>Autonomous research agents for Claude Code — passively research and inject helpful context</strong>
+</p>
+
+<p align="center">
+  <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL v3"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen" alt="Node.js"></a>
+  <a href="https://docs.anthropic.com/claude-code"><img src="https://img.shields.io/badge/powered%20by-Claude%20Agent%20SDK-orange" alt="Claude Agent SDK"></a>
+</p>
 
 ---
 
