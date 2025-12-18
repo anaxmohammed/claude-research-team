@@ -1,0 +1,56 @@
+{
+  "name": "claude-research-team",
+  "version": "1.0.0",
+  "description": "Autonomous research agents for Claude Code - passively research and inject helpful context",
+  "author": "bigphoot",
+  "repository": "https://github.com/bigphoot/claude-research-team",
+  "license": "AGPL-3.0",
+  "main": "dist/plugin/index.js",
+  "engines": {
+    "claude-code": ">=1.0.0"
+  },
+  "hooks": {
+    "SessionStart": "dist/hooks/session-start.js",
+    "SessionEnd": "dist/hooks/session-end.js",
+    "UserPromptSubmit": "dist/hooks/user-prompt-submit.js",
+    "PostToolUse": "dist/hooks/post-tool-use.js"
+  },
+  "skills": [
+    {
+      "name": "research",
+      "description": "Queue background research on a topic. Use when you need to gather information that will be passively injected later.",
+      "file": "dist/skills/research.js"
+    },
+    {
+      "name": "research-status",
+      "description": "Check the status of the research queue and recent findings.",
+      "file": "dist/skills/research-status.js"
+    }
+  ],
+  "settings": {
+    "port": {
+      "type": "number",
+      "default": 3200,
+      "description": "HTTP service port"
+    },
+    "defaultDepth": {
+      "type": "string",
+      "enum": ["quick", "medium", "deep"],
+      "default": "medium",
+      "description": "Default research depth"
+    },
+    "maxInjectionsPerSession": {
+      "type": "number",
+      "default": 5,
+      "description": "Maximum context injections per session"
+    },
+    "claudeMemSync": {
+      "type": "boolean",
+      "default": false,
+      "description": "Sync research findings to claude-mem"
+    }
+  },
+  "dependencies": {
+    "runtime": ["better-sqlite3"]
+  }
+}
