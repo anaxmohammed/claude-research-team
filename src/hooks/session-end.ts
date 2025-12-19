@@ -1,37 +1,46 @@
 /**
  * SessionEnd Hook
- * Notifies the research service that a session has ended
- * Can trigger sync to claude-mem if enabled
+ *
+ * This hook runs at the end of a Claude Code session.
+ * It notifies the research service to clean up session state.
+ *
+ * Stdin Input: { session_id, cwd }
+ * Stdout Output: { continue, suppressOutput }
  */
 
-import type { HookResult } from '../types.js';
+import {
+  createHookRunner,
+  createContinueResponse,
+  type HookResponse,
+} from './cli-handler.js';
 
 const SERVICE_URL = process.env.CLAUDE_RESEARCH_URL || 'http://localhost:3200';
 
-interface SessionEndInput {
-  sessionId: string;
-  projectPath?: string;
+interface SessionEndHookInput {
+  session_id: string;
+  cwd?: string;
 }
 
 /**
  * Main hook handler
  */
-export async function sessionEnd(input: SessionEndInput): Promise<HookResult> {
+async function handleSessionEnd(input: SessionEndHookInput): Promise<HookResponse> {
+  // Notify research service of session end
   try {
-    // Notify research service (could trigger cleanup or sync)
-    await fetch(`${SERVICE_URL}/api/sessions/${input.sessionId}/end`, {
+    await fetch(`${SERVICE_URL}/api/sessions/${input.session_id}/end`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        endedAt: Date.now(),
+      }),
       signal: AbortSignal.timeout(2000),
-    }).catch(() => {
-      // Service might not be running, that's okay
     });
-
-    return { continue: true };
   } catch {
-    return { continue: true };
+    // Service might not be running, that's okay
   }
+
+  return createContinueResponse();
 }
 
-// Export for Claude Code hook system
-export default sessionEnd;
+// Entry point - run the hook with stdin/stdout protocol
+createHookRunner(handleSessionEnd);

@@ -56,22 +56,31 @@ Don't have claude-mem? That's fine — the plugin works standalone too, but you'
 │                        CLAUDE RESEARCH TEAM                               │
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐               │
-│   │  USER       │     │  TRIGGER    │     │  RESEARCH   │               │
-│   │  PROMPT     │────▶│  DETECTOR   │────▶│  QUEUE      │               │
-│   └─────────────┘     └─────────────┘     └──────┬──────┘               │
-│                                                  │                       │
-│                                                  ▼                       │
-│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐               │
-│   │  CLAUDE     │◀────│  INJECTION  │◀────│  CLAUDE SDK │               │
-│   │  CONTEXT    │     │  MANAGER    │     │  SYNTHESIS  │               │
-│   └─────────────┘     └─────────────┘     └─────────────┘               │
-│                                                  │                       │
-│                                                  ▼                       │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                     CLAUDE-MEM DATABASE                          │   │
-│   │   ~/.claude-mem/claude-mem.db (shared with claude-mem plugin)   │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
+│   STREAMING CONVERSATION ANALYSIS                                        │
+│   ───────────────────────────────                                        │
+│                                                                          │
+│   ┌─────────────┐     ┌─────────────────┐     ┌─────────────┐           │
+│   │  USER       │────▶│  CONVERSATION   │────▶│  RESEARCH   │           │
+│   │  PROMPT     │     │  ANALYZER       │     │  DETECTOR   │           │
+│   └─────────────┘     └─────────────────┘     └──────┬──────┘           │
+│         │                     │                       │                  │
+│         │                     ▼                       ▼                  │
+│         │            ┌─────────────────┐     ┌─────────────┐            │
+│         │            │  SESSION STATE  │     │  RESEARCH   │            │
+│         │            │  (topics, errs) │     │  QUEUE      │            │
+│         │            └─────────────────┘     └──────┬──────┘            │
+│         │                                           │                    │
+│   ┌─────────────┐                                   ▼                    │
+│   │  TOOL USE   │     ┌─────────────────┐   ┌─────────────┐             │
+│   │  (streamed) │────▶│  POST-TOOL-USE  │◀──│  CLAUDE SDK │             │
+│   └─────────────┘     │  HOOK           │   │  SYNTHESIS  │             │
+│                       └────────┬────────┘   └─────────────┘             │
+│                                │                    │                    │
+│                                ▼                    ▼                    │
+│   ┌─────────────┐     ┌─────────────────┐   ┌─────────────────────┐     │
+│   │  CLAUDE     │◀────│  INJECTION      │   │  CLAUDE-MEM DB      │     │
+│   │  CONTEXT    │     │  MANAGER        │   │  ~/.claude-mem/     │     │
+│   └─────────────┘     └─────────────────┘   └─────────────────────┘     │
 │                                                                          │
 │   ═══════════════════════════════════════════════════════════════════   │
 │                                                                          │
@@ -82,6 +91,16 @@ Don't have claude-mem? That's fine — the plugin works standalone too, but you'
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Streaming Conversation Flow
+
+The plugin uses Claude Code's **stdin/stdout hook protocol** to stream conversation data to the research service:
+
+1. **User prompts** → Streamed via `UserPromptSubmit` hook for trigger detection
+2. **Tool uses** → ALL tool executions streamed via `PostToolUse` hook
+3. **Conversation analyzer** → Maintains session state (topics, errors, patterns)
+4. **Research detector** → Analyzes content for research opportunities
+5. **Context injection** → Returns research via `additionalContext` in hook response
 
 ### Two Injection Paths
 
@@ -268,9 +287,34 @@ Configuration is stored in `~/.claude-research-team/config.json`:
 
 ## How It Works
 
-### 1. Trigger Detection
+### 1. Hook Communication (stdin/stdout Protocol)
 
-When you send a prompt, the `UserPromptSubmit` hook analyzes it for research opportunities:
+All hooks use Claude Code's **stdin/stdout protocol**:
+
+```typescript
+// Hooks receive JSON input from stdin:
+{
+  "session_id": "uuid",
+  "prompt": "user's message",      // UserPromptSubmit
+  "tool_name": "Read",              // PostToolUse
+  "tool_input": {...},              // PostToolUse
+  "tool_response": "..."            // PostToolUse
+}
+
+// Hooks output JSON to stdout:
+{
+  "continue": true,
+  "suppressOutput": true,
+  "hookSpecificOutput": {           // Optional - for context injection
+    "hookEventName": "PostToolUse",
+    "additionalContext": "<research-context>...</research-context>"
+  }
+}
+```
+
+### 2. Trigger Detection
+
+When you send a prompt, the `UserPromptSubmit` hook streams it to the research service for analysis:
 
 ```typescript
 // Patterns that trigger research:
@@ -282,7 +326,7 @@ When you send a prompt, the `UserPromptSubmit` hook analyzes it for research opp
 
 If confidence score ≥ 0.6, research is queued in the background.
 
-### 2. Research Execution
+### 3. Research Execution
 
 The research executor:
 
@@ -292,7 +336,7 @@ The research executor:
 4. **Synthesizes** — Uses Claude Agent SDK to create intelligent summary
 5. **Stores** — Saves to claude-mem database as a `discovery` observation
 
-### 3. Context Injection
+### 4. Context Injection
 
 After each tool use, the `PostToolUse` hook:
 
@@ -386,6 +430,31 @@ GET /api/queue/stats     # Queue statistics
 GET /api/tasks           # List recent tasks
 GET /api/tasks/:id       # Get specific task
 GET /api/search/tasks?q= # Search tasks (uses FTS5)
+```
+
+### Conversation Streaming (Hook Endpoints)
+
+```http
+POST /api/conversation/user-prompt   # Stream user prompt from hook
+{
+  "sessionId": "session-uuid",
+  "prompt": "How do I implement...",
+  "projectPath": "/path/to/project",
+  "timestamp": 1702934567890
+}
+
+POST /api/conversation/tool-use      # Stream tool use from hook
+{
+  "sessionId": "session-uuid",
+  "toolName": "Read",
+  "toolInput": {"file_path": "/foo.ts"},
+  "toolOutput": "File contents...",
+  "projectPath": "/path/to/project",
+  "timestamp": 1702934567890
+}
+# Returns: {success, data: {injection?: string}}
+
+GET /api/conversation/:sessionId/stats   # Get session statistics
 ```
 
 ### Trigger Analysis
@@ -491,9 +560,12 @@ claude-research-team/
 ├── assets/
 │   └── logo.png            # Project logo
 ├── src/
+│   ├── conversation/       # Streaming conversation analyzer
+│   │   └── analyzer.ts     # Session state + research opportunity detection
 │   ├── crew/               # Research executor (Claude SDK synthesis)
 │   ├── database/           # SQLite with FTS5 for local storage
-│   ├── hooks/              # Claude Code lifecycle hooks
+│   ├── hooks/              # Claude Code lifecycle hooks (stdin/stdout protocol)
+│   │   ├── cli-handler.ts  # Shared stdin/stdout protocol handler
 │   │   ├── session-start.ts
 │   │   ├── session-end.ts
 │   │   ├── user-prompt-submit.ts

@@ -16,6 +16,7 @@ import { getDatabase, closeDatabase } from '../database/index.js';
 import { getConfig, ConfigManager } from '../utils/config.js';
 import { Logger, setLogLevel, setLogFile } from '../utils/logger.js';
 import { getMemoryIntegration } from '../memory/memory-integration.js';
+import { getConversationAnalyzer, type ResearchOpportunity } from '../conversation/analyzer.js';
 import type {
   ServiceStatus,
   ApiResponse,
@@ -268,12 +269,99 @@ export class ResearchService {
       res.json(this.successResponse({ sessionId }));
     });
 
+    // End session
+    this.app.post('/api/sessions/:sessionId/end', (req, res) => {
+      const { sessionId } = req.params;
+      const analyzer = getConversationAnalyzer();
+      analyzer.endSession(sessionId);
+      res.json(this.successResponse({ sessionId, ended: true }));
+    });
+
     // Get active sessions
     this.app.get('/api/sessions', (req, res) => {
       const sinceMs = parseInt(req.query.since as string) || 3600000;
       const db = getDatabase();
       const sessions = db.getActiveSessions(sinceMs);
       res.json(this.successResponse(sessions));
+    });
+
+    // ===== Conversation Streaming Routes =====
+    // These endpoints receive streaming data from hooks
+
+    // Process user prompt from UserPromptSubmit hook
+    this.app.post('/api/conversation/user-prompt', async (req, res) => {
+      try {
+        const { sessionId, prompt, projectPath } = req.body;
+        if (!sessionId || !prompt) {
+          res.status(400).json(this.errorResponse('sessionId and prompt required'));
+          return;
+        }
+
+        const analyzer = getConversationAnalyzer();
+        const opportunity = analyzer.processUserPrompt(sessionId, prompt, projectPath);
+
+        // If research should be queued, do it
+        if (opportunity.shouldResearch && opportunity.query) {
+          analyzer.markResearchPerformed(sessionId);
+          await this.queueResearchFromOpportunity(sessionId, opportunity);
+        }
+
+        res.json(this.successResponse({
+          researchQueued: opportunity.shouldResearch,
+          queuedQuery: opportunity.query,
+          confidence: opportunity.confidence,
+          reason: opportunity.reason,
+        }));
+      } catch (error) {
+        this.logger.error('Failed to process user prompt', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
+    // Process tool use from PostToolUse hook
+    this.app.post('/api/conversation/tool-use', async (req, res) => {
+      try {
+        const { sessionId, toolName, toolInput, toolOutput, projectPath } = req.body;
+        if (!sessionId || !toolName) {
+          res.status(400).json(this.errorResponse('sessionId and toolName required'));
+          return;
+        }
+
+        const analyzer = getConversationAnalyzer();
+        const { opportunity, injection } = analyzer.processToolUse(
+          sessionId,
+          toolName,
+          toolInput || {},
+          toolOutput || '',
+          projectPath
+        );
+
+        // If research should be queued, do it
+        if (opportunity.shouldResearch && opportunity.query) {
+          analyzer.markResearchPerformed(sessionId);
+          await this.queueResearchFromOpportunity(sessionId, opportunity);
+        }
+
+        res.json(this.successResponse({
+          injection,
+          researchQueued: opportunity.shouldResearch,
+          queuedQuery: opportunity.query,
+        }));
+      } catch (error) {
+        this.logger.error('Failed to process tool use', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
+    // Get session conversation stats
+    this.app.get('/api/conversation/:sessionId/stats', (req, res) => {
+      const analyzer = getConversationAnalyzer();
+      const stats = analyzer.getSessionStats(req.params.sessionId);
+      if (!stats) {
+        res.status(404).json(this.errorResponse('Session not found'));
+        return;
+      }
+      res.json(this.successResponse(stats));
     });
 
     // ===== Memory/Knowledge Routes =====
@@ -418,6 +506,67 @@ export class ResearchService {
         claudeMemSync: this.config.getValue('claudeMemSync'),
       },
     };
+  }
+
+  /**
+   * Queue research from a detected opportunity
+   */
+  private async queueResearchFromOpportunity(
+    sessionId: string,
+    opportunity: ResearchOpportunity
+  ): Promise<ResearchTask | null> {
+    if (!opportunity.query) return null;
+
+    try {
+      const task = await this.queue.queue({
+        query: opportunity.query,
+        depth: opportunity.depth,
+        trigger: 'tool_output', // Or 'user_prompt' based on source
+        sessionId,
+        priority: opportunity.priority,
+      });
+
+      this.logger.info(`Research queued: "${opportunity.query}" (${opportunity.reason})`);
+
+      // When research completes, queue injection
+      task.id && this.setupInjectionCallback(sessionId, task.id, opportunity.query);
+
+      return task;
+    } catch (error) {
+      this.logger.error('Failed to queue research from opportunity', error);
+      return null;
+    }
+  }
+
+  /**
+   * Setup callback to inject research results when complete
+   */
+  private setupInjectionCallback(sessionId: string, taskId: string, query: string): void {
+    // Poll for task completion and queue injection
+    const checkInterval = setInterval(async () => {
+      const task = this.queue.getTask(taskId);
+      if (!task) {
+        clearInterval(checkInterval);
+        return;
+      }
+
+      if (task.status === 'completed' && task.result) {
+        clearInterval(checkInterval);
+        const analyzer = getConversationAnalyzer();
+        analyzer.queueInjection(sessionId, {
+          taskId,
+          query,
+          summary: task.result.summary,
+          relevance: task.result.confidence,
+        });
+        this.logger.debug(`Injection queued for session ${sessionId}: "${query}"`);
+      } else if (task.status === 'failed') {
+        clearInterval(checkInterval);
+      }
+    }, 2000); // Check every 2 seconds
+
+    // Timeout after 2 minutes
+    setTimeout(() => clearInterval(checkInterval), 120000);
   }
 
   /**
