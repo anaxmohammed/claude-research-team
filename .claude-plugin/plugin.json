@@ -1,0 +1,17 @@
+{
+  "name": "claude-research-team",
+  "version": "1.0.0",
+  "description": "Autonomous research agents for Claude Code - passively research and inject helpful context",
+  "author": {
+    "name": "bigphoot"
+  },
+  "repository": "https://github.com/bigph00t/claude-research-team",
+  "license": "AGPL-3.0",
+  "keywords": [
+    "research",
+    "agents",
+    "context",
+    "memory",
+    "claude-mem"
+  ]
+}
