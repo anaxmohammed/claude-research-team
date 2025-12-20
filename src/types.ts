@@ -205,6 +205,24 @@ export interface Session {
 // Configuration Types
 // ============================================================================
 
+export type AIProvider = 'claude' | 'gemini';
+export type ClaudeModel = 'haiku' | 'sonnet' | 'opus';
+export type GeminiModel = 'gemini-2.0-flash-exp' | 'gemini-1.5-flash' | 'gemini-1.5-pro';
+
+export interface ResearchSettings {
+  autonomousEnabled: boolean;      // Enable/disable autonomous research
+  confidenceThreshold: number;     // 0.5-0.95, minimum confidence to trigger
+  sessionCooldownMs: number;       // Cooldown between researches per session
+  maxResearchPerHour: number;      // Global hourly limit
+}
+
+export interface AIProviderConfig {
+  provider: AIProvider;            // Which provider to use
+  claudeModel: ClaudeModel;        // Which Claude model (haiku/sonnet/opus)
+  geminiApiKey?: string;           // API key for Gemini (from env or settings)
+  geminiModel: GeminiModel;        // Gemini model (default: gemini-2.0-flash-exp)
+}
+
 export interface Config {
   // Service
   port: number;
@@ -214,6 +232,12 @@ export interface Config {
   // Research
   defaultDepth: ResearchDepth;
   engines: string[];       // Which search engines to use
+
+  // Autonomous Research Settings
+  research: ResearchSettings;
+
+  // AI Provider Settings
+  aiProvider: AIProviderConfig;
 
   // Injection
   injection: InjectionBudget;
@@ -233,6 +257,21 @@ export const DEFAULT_CONFIG: Config = {
 
   defaultDepth: 'medium',
   engines: ['serper', 'brave', 'tavily'],
+
+  // Autonomous research settings (conservative defaults)
+  research: {
+    autonomousEnabled: true,
+    confidenceThreshold: 0.85,     // High bar - only research when confident
+    sessionCooldownMs: 60000,      // 1 minute between researches per session
+    maxResearchPerHour: 20,        // Global limit to prevent runaway costs
+  },
+
+  // AI provider (Claude SDK by default, Gemini optional)
+  aiProvider: {
+    provider: 'claude',            // Uses Claude Agent SDK (your Claude account)
+    claudeModel: 'haiku',          // Default to haiku for efficiency
+    geminiModel: 'gemini-2.0-flash-exp',  // Free tier model (detected from env)
+  },
 
   injection: {
     maxPerSession: 5,

@@ -12,8 +12,8 @@
  * - Detect when alternative approaches might be better (creative thinking)
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../utils/logger.js';
+import { queryAI } from '../ai/provider.js';
 import type { Finding, BaseSpecialistAgent } from './specialists/base.js';
 
 // ============================================================================
@@ -259,31 +259,24 @@ export class CoordinatorAgent {
   }
 
   // ============================================================================
-  // Private: Claude Interaction
+  // Private: AI Interaction
   // ============================================================================
 
   /**
-   * Call Claude using the Agent SDK
+   * Call AI using the configured provider (Claude or Gemini)
    */
   private async callClaude(prompt: string): Promise<string> {
-    const queryGenerator = query({
-      prompt,
-      options: {
-        maxTurns: 1,
-        tools: [],
-        // Using haiku for efficiency - coordinator decisions are short
-      },
+    const result = await queryAI(prompt, {
+      maxTokens: 1024,
+      temperature: 0.3, // Lower temperature for more focused decisions
     });
 
-    let result = '';
-    for await (const message of queryGenerator) {
-      if (message.type === 'result' && message.subtype === 'success') {
-        result = message.result;
-        break;
-      }
-    }
+    this.logger.debug(`AI response from ${result.provider}`, {
+      model: result.model,
+      tokensUsed: result.tokensUsed,
+    });
 
-    return result;
+    return result.content;
   }
 
   // ============================================================================

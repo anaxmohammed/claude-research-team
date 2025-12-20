@@ -59,6 +59,6 @@
     }
   },
   "dependencies": {
-    "runtime": ["better-sqlite3"]
+    "runtime": []
   }
 }

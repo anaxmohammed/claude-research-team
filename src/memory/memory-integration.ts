@@ -12,7 +12,7 @@
  * - Observations use type='research-injection' for easy filtering
  */
 
-import Database from 'better-sqlite3';
+import { openDatabaseSync, type SqliteDatabase } from '../database/sqlite-adapter.js';
 import { Logger } from '../utils/logger.js';
 import type { ResearchFinding } from '../types.js';
 import path from 'path';
@@ -43,7 +43,7 @@ export interface SynthesizedLearning {
 }
 
 export class MemoryIntegration {
-  private db: Database.Database | null = null;
+  private db: SqliteDatabase | null = null;
   private logger: Logger;
   private initialized: boolean = false;
   private available: boolean = false;
@@ -69,7 +69,7 @@ export class MemoryIntegration {
         return false;
       }
 
-      this.db = new Database(CLAUDE_MEM_DB);
+      this.db = openDatabaseSync(CLAUDE_MEM_DB);
       this.db.pragma('journal_mode = WAL');
 
       // Verify we can access the observations table

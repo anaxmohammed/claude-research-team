@@ -775,6 +775,93 @@ export class ResearchService {
       }
     });
 
+    // ===== Settings API (for dashboard) =====
+
+    this.app.get('/api/settings', (_req, res) => {
+      const config = this.config.get();
+      // Check for Gemini API key in env or config
+      const geminiKeyFromEnv = process.env.GEMINI_API_KEY;
+      const geminiAvailable = !!(geminiKeyFromEnv || config.aiProvider.geminiApiKey);
+
+      res.json(this.successResponse({
+        research: config.research,
+        aiProvider: {
+          provider: config.aiProvider.provider,
+          claudeModel: config.aiProvider.claudeModel,
+          geminiModel: config.aiProvider.geminiModel,
+        },
+        geminiAvailable,
+      }));
+    });
+
+    this.app.post('/api/settings', (req, res) => {
+      try {
+        const { research, aiProvider } = req.body;
+
+        // Validate research settings
+        if (research) {
+          if (typeof research.autonomousEnabled !== 'boolean') {
+            throw new Error('autonomousEnabled must be boolean');
+          }
+          if (research.confidenceThreshold < 0.5 || research.confidenceThreshold > 0.95) {
+            throw new Error('confidenceThreshold must be between 0.5 and 0.95');
+          }
+          if (![30000, 60000, 120000, 300000].includes(research.sessionCooldownMs)) {
+            throw new Error('Invalid sessionCooldownMs value');
+          }
+          if (research.maxResearchPerHour < 5 || research.maxResearchPerHour > 100) {
+            throw new Error('maxResearchPerHour must be between 5 and 100');
+          }
+          this.config.setValue('research', research);
+        }
+
+        // Validate AI provider settings
+        if (aiProvider) {
+          const validProviders = ['claude', 'gemini'];
+          if (!validProviders.includes(aiProvider.provider)) {
+            throw new Error('provider must be claude or gemini');
+          }
+
+          const validClaudeModels = ['haiku', 'sonnet', 'opus'];
+          if (aiProvider.claudeModel && !validClaudeModels.includes(aiProvider.claudeModel)) {
+            throw new Error('claudeModel must be haiku, sonnet, or opus');
+          }
+
+          const validGeminiModels = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+          if (aiProvider.geminiModel && !validGeminiModels.includes(aiProvider.geminiModel)) {
+            throw new Error('Invalid geminiModel');
+          }
+
+          const currentAiConfig = this.config.getValue('aiProvider');
+          const newAiConfig = {
+            ...currentAiConfig,
+            provider: aiProvider.provider,
+            claudeModel: aiProvider.claudeModel || currentAiConfig.claudeModel,
+            geminiModel: aiProvider.geminiModel || currentAiConfig.geminiModel,
+          };
+
+          this.config.setValue('aiProvider', newAiConfig);
+        }
+
+        // Notify watcher of config changes
+        this.watcher.updateConfig(this.config.get());
+
+        res.json(this.successResponse({ message: 'Settings saved' }));
+      } catch (error) {
+        res.status(400).json(this.errorResponse(String(error)));
+      }
+    });
+
+    this.app.post('/api/settings/reset', (_req, res) => {
+      try {
+        this.config.reset();
+        this.watcher.updateConfig(this.config.get());
+        res.json(this.successResponse({ message: 'Settings reset to defaults' }));
+      } catch (error) {
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
     // ===== Web UI =====
 
     this.app.get('/', (_req, res) => {
@@ -1351,6 +1438,212 @@ export class ResearchService {
       display: inline-block;
       margin-right: 0.5rem;
     }
+
+    /* Settings Panel */
+    .settings-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-bottom: 1.5rem;
+      overflow: hidden;
+    }
+    .settings-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.25rem;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.2s;
+    }
+    .settings-header:hover {
+      background: var(--bg);
+    }
+    .settings-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .settings-toggle {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      transition: transform 0.2s;
+    }
+    .settings-toggle.open {
+      transform: rotate(180deg);
+    }
+    .settings-body {
+      display: none;
+      padding: 0 1.25rem 1.25rem;
+      border-top: 1px solid var(--border);
+    }
+    .settings-body.open {
+      display: block;
+    }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+      padding-top: 1rem;
+    }
+    .settings-section {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .settings-section h4 {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 0;
+    }
+    .setting-label {
+      font-size: 0.875rem;
+      color: var(--text);
+    }
+    .setting-sublabel {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.125rem;
+    }
+    .setting-input {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .setting-input input[type="range"] {
+      width: 100px;
+      accent-color: var(--primary);
+    }
+    .setting-input input[type="number"] {
+      width: 70px;
+      padding: 0.375rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 0.875rem;
+      text-align: center;
+    }
+    .setting-input select {
+      padding: 0.375rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 0.875rem;
+      background: var(--surface);
+    }
+    .setting-value {
+      font-size: 0.8rem;
+      color: var(--primary);
+      font-weight: 600;
+      min-width: 3rem;
+      text-align: right;
+    }
+    /* Toggle switch */
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+    }
+    .toggle input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: var(--border);
+      transition: 0.3s;
+      border-radius: 24px;
+    }
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: 0.3s;
+      border-radius: 50%;
+    }
+    .toggle input:checked + .toggle-slider {
+      background-color: var(--success);
+    }
+    .toggle input:checked + .toggle-slider:before {
+      transform: translateX(20px);
+    }
+    .settings-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+    .settings-btn {
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .settings-btn.primary {
+      background: var(--primary);
+      color: white;
+      border: none;
+    }
+    .settings-btn.primary:hover {
+      opacity: 0.9;
+    }
+    .settings-btn.secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .settings-btn.secondary:hover {
+      background: var(--bg);
+    }
+    .settings-status {
+      font-size: 0.8rem;
+      padding: 0.375rem 0.75rem;
+      border-radius: 4px;
+      display: none;
+    }
+    .settings-status.success {
+      display: inline-block;
+      background: var(--success-light);
+      color: var(--success);
+    }
+    .settings-status.error {
+      display: inline-block;
+      background: var(--error-light);
+      color: var(--error);
+    }
+    .api-key-input {
+      width: 100%;
+      padding: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-family: monospace;
+      margin-top: 0.5rem;
+    }
+    .api-key-input::placeholder {
+      color: var(--text-muted);
+    }
   </style>
 </head>
 <body>
@@ -1397,6 +1690,124 @@ export class ResearchService {
       <button type="submit" class="submit-btn">Research</button>
     </form>
 
+    <!-- Settings Panel -->
+    <div class="settings-panel" id="settings-panel">
+      <div class="settings-header" onclick="toggleSettings()">
+        <span class="settings-title">Settings</span>
+        <span class="settings-toggle" id="settings-toggle-icon">&#9660;</span>
+      </div>
+      <div class="settings-body" id="settings-body">
+        <div class="settings-grid">
+          <!-- Autonomous Research Section -->
+          <div class="settings-section">
+            <h4>Autonomous Research</h4>
+            <div class="setting-row">
+              <div>
+                <div class="setting-label">Enable Autonomous</div>
+                <div class="setting-sublabel">Auto-research during Claude sessions</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="setting-autonomous" checked>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div>
+                <div class="setting-label">Confidence Threshold</div>
+                <div class="setting-sublabel">Minimum confidence to trigger</div>
+              </div>
+              <div class="setting-input">
+                <input type="range" id="setting-confidence" min="50" max="95" step="5" value="85">
+                <span class="setting-value" id="confidence-value">85%</span>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div>
+                <div class="setting-label">Session Cooldown</div>
+                <div class="setting-sublabel">Min time between researches</div>
+              </div>
+              <div class="setting-input">
+                <select id="setting-cooldown">
+                  <option value="30000">30 sec</option>
+                  <option value="60000" selected>1 min</option>
+                  <option value="120000">2 min</option>
+                  <option value="300000">5 min</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div>
+                <div class="setting-label">Max Per Hour</div>
+                <div class="setting-sublabel">Global hourly limit</div>
+              </div>
+              <div class="setting-input">
+                <input type="number" id="setting-max-hour" min="5" max="100" value="20">
+              </div>
+            </div>
+          </div>
+
+          <!-- AI Provider Section -->
+          <div class="settings-section">
+            <h4>AI Provider</h4>
+            <div class="setting-row">
+              <div>
+                <div class="setting-label">Provider</div>
+                <div class="setting-sublabel">Which AI to use for synthesis</div>
+              </div>
+              <div class="setting-input">
+                <select id="setting-provider">
+                  <option value="claude" selected>Claude (your account)</option>
+                  <option value="gemini" id="gemini-option" style="display: none;">Gemini (free API)</option>
+                </select>
+              </div>
+            </div>
+            <div id="claude-model-settings">
+              <div class="setting-row">
+                <div>
+                  <div class="setting-label">Claude Model</div>
+                  <div class="setting-sublabel">Balance speed vs capability</div>
+                </div>
+                <div class="setting-input">
+                  <select id="setting-claude-model">
+                    <option value="haiku" selected>Haiku (fastest)</option>
+                    <option value="sonnet">Sonnet (balanced)</option>
+                    <option value="opus">Opus (most capable)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div id="gemini-settings" style="display: none;">
+              <div class="setting-row">
+                <div>
+                  <div class="setting-label">Gemini Model</div>
+                  <div class="setting-sublabel">Select Gemini model</div>
+                </div>
+                <div class="setting-input">
+                  <select id="setting-gemini-model">
+                    <option value="gemini-2.0-flash-exp" selected>2.0 Flash (experimental)</option>
+                    <option value="gemini-1.5-flash">1.5 Flash (stable)</option>
+                    <option value="gemini-1.5-pro">1.5 Pro (advanced)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="setting-row" style="margin-top: 0.5rem;">
+              <div style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4;">
+                <strong>Claude:</strong> Uses your Claude Max subscription<br>
+                <span id="gemini-status">Checking for Gemini API key...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <span class="settings-status" id="settings-status"></span>
+          <button type="button" class="settings-btn secondary" onclick="resetSettings()">Reset</button>
+          <button type="button" class="settings-btn primary" onclick="saveSettings()">Save Settings</button>
+        </div>
+      </div>
+    </div>
+
     <div class="filter-bar">
       <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
       <button class="filter-btn" data-filter="user" onclick="setFilter('user')">👤 User</button>
@@ -1418,7 +1829,130 @@ export class ResearchService {
     let feedItems = [];
     let expandedItems = new Set();
     let activeFilter = 'all'; // 'all', 'manual', 'autonomous', 'injected'
+    let currentSettings = null;
 
+    // ========== Settings Functions ==========
+    function toggleSettings() {
+      const body = document.getElementById('settings-body');
+      const icon = document.getElementById('settings-toggle-icon');
+      body.classList.toggle('open');
+      icon.classList.toggle('open');
+    }
+
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const json = await res.json();
+        if (json.success && json.data) {
+          currentSettings = json.data;
+          applySettingsToForm(json.data);
+        }
+      } catch (e) {
+        console.error('Failed to load settings:', e);
+      }
+    }
+
+    function applySettingsToForm(settings) {
+      // Research settings
+      if (settings.research) {
+        document.getElementById('setting-autonomous').checked = settings.research.autonomousEnabled;
+        document.getElementById('setting-confidence').value = settings.research.confidenceThreshold * 100;
+        document.getElementById('confidence-value').textContent = Math.round(settings.research.confidenceThreshold * 100) + '%';
+        document.getElementById('setting-cooldown').value = settings.research.sessionCooldownMs;
+        document.getElementById('setting-max-hour').value = settings.research.maxResearchPerHour;
+      }
+      // AI provider settings
+      if (settings.aiProvider) {
+        document.getElementById('setting-provider').value = settings.aiProvider.provider;
+        document.getElementById('setting-claude-model').value = settings.aiProvider.claudeModel || 'haiku';
+        document.getElementById('setting-gemini-model').value = settings.aiProvider.geminiModel || 'gemini-2.0-flash-exp';
+        toggleProviderSettings(settings.aiProvider.provider);
+
+        // Check if Gemini is available
+        if (settings.geminiAvailable) {
+          document.getElementById('gemini-option').style.display = 'block';
+          document.getElementById('gemini-status').innerHTML = '<span style="color: var(--success);">Gemini API key detected</span>';
+        } else {
+          document.getElementById('gemini-option').style.display = 'none';
+          document.getElementById('gemini-status').innerHTML = 'Gemini: No API key (set GEMINI_API_KEY in .env)';
+        }
+      }
+    }
+
+    function getSettingsFromForm() {
+      return {
+        research: {
+          autonomousEnabled: document.getElementById('setting-autonomous').checked,
+          confidenceThreshold: parseInt(document.getElementById('setting-confidence').value) / 100,
+          sessionCooldownMs: parseInt(document.getElementById('setting-cooldown').value),
+          maxResearchPerHour: parseInt(document.getElementById('setting-max-hour').value)
+        },
+        aiProvider: {
+          provider: document.getElementById('setting-provider').value,
+          claudeModel: document.getElementById('setting-claude-model').value,
+          geminiModel: document.getElementById('setting-gemini-model').value
+        }
+      };
+    }
+
+    async function saveSettings() {
+      const settings = getSettingsFromForm();
+      const status = document.getElementById('settings-status');
+
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(settings)
+        });
+        const json = await res.json();
+
+        if (json.success) {
+          status.textContent = 'Settings saved!';
+          status.className = 'settings-status success';
+          currentSettings = { ...currentSettings, ...settings };
+          setTimeout(() => { status.className = 'settings-status'; }, 3000);
+        } else {
+          throw new Error(json.error || 'Failed to save');
+        }
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'settings-status error';
+      }
+    }
+
+    async function resetSettings() {
+      try {
+        const res = await fetch('/api/settings/reset', { method: 'POST' });
+        const json = await res.json();
+        if (json.success) {
+          await loadSettings();
+          const status = document.getElementById('settings-status');
+          status.textContent = 'Settings reset to defaults';
+          status.className = 'settings-status success';
+          setTimeout(() => { status.className = 'settings-status'; }, 3000);
+        }
+      } catch (e) {
+        console.error('Failed to reset settings:', e);
+      }
+    }
+
+    function toggleProviderSettings(provider) {
+      const isGemini = provider === 'gemini';
+      document.getElementById('gemini-settings').style.display = isGemini ? 'block' : 'none';
+      document.getElementById('claude-model-settings').style.display = isGemini ? 'none' : 'block';
+    }
+
+    // Settings event listeners
+    document.getElementById('setting-confidence').addEventListener('input', (e) => {
+      document.getElementById('confidence-value').textContent = e.target.value + '%';
+    });
+
+    document.getElementById('setting-provider').addEventListener('change', (e) => {
+      toggleProviderSettings(e.target.value);
+    });
+
+    // ========== WebSocket & Data Functions ==========
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === 'status') {
@@ -1728,6 +2262,7 @@ export class ResearchService {
 
     fetchAllData();
     fetchStats();
+    loadSettings();
     setInterval(fetchStats, 3000);
     setInterval(fetchAllData, 5000);
   </script>

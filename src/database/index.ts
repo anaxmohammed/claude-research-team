@@ -1,9 +1,10 @@
 /**
  * Database module for claude-research-team
  * Uses SQLite with FTS5 for full-text search
+ * Supports both Bun's native SQLite and better-sqlite3
  */
 
-import Database from 'better-sqlite3';
+import { openDatabaseSync, type SqliteDatabase } from './sqlite-adapter.js';
 import { homedir } from 'os';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -21,13 +22,13 @@ import type {
 } from '../types.js';
 
 export class ResearchDatabase {
-  private db: Database.Database;
+  private db: SqliteDatabase;
   private dataDir: string;
 
   constructor(dataDir: string = '~/.claude-research-team') {
     this.dataDir = dataDir.replace('~', homedir());
     this.ensureDataDir();
-    this.db = new Database(join(this.dataDir, 'research.db'));
+    this.db = openDatabaseSync(join(this.dataDir, 'research.db'));
     this.initialize();
   }
 

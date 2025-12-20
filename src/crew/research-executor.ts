@@ -10,9 +10,9 @@
  * 5. Store: Persist results to memory for future learning
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { ResearchTask, ResearchResult, ResearchDepth, ResearchFinding } from '../types.js';
 import { Logger } from '../utils/logger.js';
+import { queryAI } from '../ai/provider.js';
 import { getMemoryIntegration } from '../memory/memory-integration.js';
 import { getDatabase } from '../database/index.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -404,7 +404,7 @@ export class ResearchExecutor {
   }
 
   /**
-   * Synthesize research using Claude Agent SDK
+   * Synthesize research using configured AI provider
    */
   private async synthesize(
     searchQuery: string,
@@ -412,32 +412,24 @@ export class ResearchExecutor {
     scrapedContent: Array<{ url: string; content: string }>,
     context?: string
   ): Promise<{ summary: string; fullContent: string; confidence: number }> {
-    // Build the prompt for Claude
+    // Build the prompt
     const prompt = this.buildSynthesisPrompt(searchQuery, searchResults, scrapedContent, context);
 
     try {
-      // Use Claude Agent SDK query function
-      const queryGenerator = query({
-        prompt,
-        options: {
-          maxTurns: 1,
-          tools: [], // No tools needed for synthesis
-        },
+      // Use the AI provider abstraction
+      const result = await queryAI(prompt, {
+        maxTokens: 2048,
+        temperature: 0.5,
       });
 
-      // Collect the result
-      let resultText = '';
-      for await (const message of queryGenerator) {
-        if (message.type === 'result' && message.subtype === 'success') {
-          resultText = message.result;
-          break;
-        }
-      }
+      this.logger.debug(`Synthesis by ${result.provider} (${result.model})`, {
+        tokensUsed: result.tokensUsed,
+      });
 
       // Parse the response
-      return this.parseSynthesisResponse(resultText);
+      return this.parseSynthesisResponse(result.content);
     } catch (error) {
-      this.logger.error('Claude synthesis failed', error);
+      this.logger.error('AI synthesis failed', error);
       // Fall back to simple summary
       return this.createFallbackSynthesis(searchQuery, searchResults);
     }

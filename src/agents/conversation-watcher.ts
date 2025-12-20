@@ -12,10 +12,12 @@
  * - Respect cooldowns and avoid redundant research
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import { Logger } from '../utils/logger.js';
+import { queryAI } from '../ai/provider.js';
 import { getSessionManager, type ConversationEntry } from '../service/session-manager.js';
+import type { Config, ResearchSettings } from '../types.js';
+import { DEFAULT_CONFIG } from '../types.js';
 
 // ============================================================================
 // Types
@@ -64,16 +66,34 @@ export class ConversationWatcher extends EventEmitter {
   private globalResearchCount = 0;
   private globalResearchResetTime = Date.now();
 
-  // Configuration - CONSERVATIVE to prevent token burn
-  private readonly COOLDOWN_MS = 60000;            // 1 minute between research per session
-  private readonly MIN_CONFIDENCE_DIRECT = 0.85;   // High threshold - only research when confident
-  private readonly MIN_CONFIDENCE_ALTERNATIVE = 0.9; // Very high bar for suggesting pivots
-  private readonly MIN_CONFIDENCE_VALIDATION = 0.85;  // For confirming approaches
-  private readonly MAX_GLOBAL_RESEARCH_PER_HOUR = 20;  // Hard limit: max 20 researches per hour globally
+  // Dynamic configuration from dashboard settings
+  private settings: ResearchSettings = DEFAULT_CONFIG.research;
+  private autonomousEnabled = true;
 
   constructor() {
     super();
     this.logger = new Logger('ConversationWatcher');
+  }
+
+  /**
+   * Update configuration from dashboard settings
+   */
+  updateConfig(config: Config): void {
+    this.settings = config.research;
+    this.autonomousEnabled = config.research.autonomousEnabled;
+    this.logger.info('Config updated', {
+      autonomousEnabled: this.autonomousEnabled,
+      confidenceThreshold: this.settings.confidenceThreshold,
+      sessionCooldownMs: this.settings.sessionCooldownMs,
+      maxResearchPerHour: this.settings.maxResearchPerHour,
+    });
+  }
+
+  /**
+   * Get current settings (for status display)
+   */
+  getSettings(): ResearchSettings {
+    return { ...this.settings };
   }
 
   /**
@@ -89,8 +109,9 @@ export class ConversationWatcher extends EventEmitter {
       this.globalResearchResetTime = now;
     }
 
-    if (this.globalResearchCount >= this.MAX_GLOBAL_RESEARCH_PER_HOUR) {
-      this.logger.warn(`Global rate limit reached: ${this.globalResearchCount}/${this.MAX_GLOBAL_RESEARCH_PER_HOUR} per hour`);
+    const maxPerHour = this.settings.maxResearchPerHour;
+    if (this.globalResearchCount >= maxPerHour) {
+      this.logger.warn(`Global rate limit reached: ${this.globalResearchCount}/${maxPerHour} per hour`);
       return false;
     }
 
@@ -102,7 +123,7 @@ export class ConversationWatcher extends EventEmitter {
    */
   private incrementGlobalCounter(): void {
     this.globalResearchCount++;
-    this.logger.info(`Global research count: ${this.globalResearchCount}/${this.MAX_GLOBAL_RESEARCH_PER_HOUR} this hour`);
+    this.logger.info(`Global research count: ${this.globalResearchCount}/${this.settings.maxResearchPerHour} this hour`);
   }
 
   /**
@@ -119,6 +140,11 @@ export class ConversationWatcher extends EventEmitter {
    * - Alternative approaches (Claude might have tunnel vision)
    */
   async analyze(sessionId: string, trigger: 'user_prompt' | 'tool_output'): Promise<WatcherDecision> {
+    // Check if autonomous research is enabled
+    if (!this.autonomousEnabled) {
+      return this.createNoResearchDecision('Autonomous research disabled in settings');
+    }
+
     // IMPORTANT: Skip analysis on user prompts - let Claude decide if it needs manual research
     if (trigger === 'user_prompt') {
       this.logger.debug(`Skipping analysis for user prompt - manual research should be used`);
@@ -298,7 +324,7 @@ export class ConversationWatcher extends EventEmitter {
     if (!lastTime) return 0;
 
     const elapsed = Date.now() - lastTime;
-    return Math.max(0, this.COOLDOWN_MS - elapsed);
+    return Math.max(0, this.settings.sessionCooldownMs - elapsed);
   }
 
   /**
@@ -313,24 +339,13 @@ export class ConversationWatcher extends EventEmitter {
   // ============================================================================
 
   private async callClaude(prompt: string): Promise<string> {
-    const queryGenerator = query({
-      prompt,
-      options: {
-        maxTurns: 1,
-        tools: [],
-        // Haiku is used for efficiency
-      },
+    const result = await queryAI(prompt, {
+      maxTokens: 512,
+      temperature: 0.3, // Lower temperature for consistent decisions
     });
 
-    let result = '';
-    for await (const message of queryGenerator) {
-      if (message.type === 'result' && message.subtype === 'success') {
-        result = message.result;
-        break;
-      }
-    }
-
-    return result;
+    this.logger.debug(`Analysis by ${result.provider}`, { model: result.model });
+    return result.content;
   }
 
   // ============================================================================
@@ -524,15 +539,18 @@ export class ConversationWatcher extends EventEmitter {
   private meetsThreshold(decision: WatcherDecision): boolean {
     if (!decision.shouldResearch) return false;
 
+    const baseThreshold = this.settings.confidenceThreshold;
+
     switch (decision.researchType) {
       case 'direct':
-        return decision.confidence >= this.MIN_CONFIDENCE_DIRECT;
+        return decision.confidence >= baseThreshold;
       case 'alternative':
-        return decision.confidence >= this.MIN_CONFIDENCE_ALTERNATIVE;
+        // Higher bar for suggesting alternative approaches (5% higher)
+        return decision.confidence >= Math.min(0.95, baseThreshold + 0.05);
       case 'validation':
-        return decision.confidence >= this.MIN_CONFIDENCE_VALIDATION;
+        return decision.confidence >= baseThreshold;
       default:
-        return decision.confidence >= this.MIN_CONFIDENCE_DIRECT;
+        return decision.confidence >= baseThreshold;
     }
   }
 
