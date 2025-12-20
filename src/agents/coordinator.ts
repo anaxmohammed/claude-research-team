@@ -296,7 +296,14 @@ export class CoordinatorAgent {
   ): string {
     const parts: string[] = [];
 
+    // Add current date context for time-aware research
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
     parts.push('You are a research coordinator planning how to investigate a query.');
+    parts.push('');
+    parts.push(`**Current Date: ${dateStr}**`);
+    parts.push('Prioritize recent information. When searching, favor sources from 2024-2025.');
     parts.push('');
     parts.push(`## Research Query`);
     parts.push(`"${directive.query}"`);
@@ -391,7 +398,14 @@ export class CoordinatorAgent {
   ): string {
     const parts: string[] = [];
 
+    // Add current date context
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
     parts.push('Synthesize research findings into a concise, actionable summary.');
+    parts.push('');
+    parts.push(`**Current Date: ${dateStr}**`);
+    parts.push('Prioritize recent information and note if any findings may be outdated.');
     parts.push('');
     parts.push(`## Original Query`);
     parts.push(`"${directive.query}"`);

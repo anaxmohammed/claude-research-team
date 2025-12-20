@@ -133,6 +133,22 @@ export class ResearchService {
 
     this.queue.on('taskCompleted', (task: ResearchTask) => {
       this.broadcast('taskCompleted', task);
+
+      // Queue injection for conversation context if we have a session
+      if (task.sessionId && task.result?.summary) {
+        this.sessionManager.queueInjection(task.sessionId, {
+          summary: task.result.summary,
+          query: task.query,
+          relevance: task.result.confidence ?? 0.7,
+          priority: task.priority ?? 5,
+          findingId: task.result.findingId,
+          sources: task.result.sources?.slice(0, 3).map(s => ({ title: s.title, url: s.url })),
+        });
+        this.logger.info(`Queued injection for session ${task.sessionId}`, {
+          query: task.query,
+          findingId: task.result.findingId,
+        });
+      }
     });
 
     this.queue.on('taskFailed', (task: ResearchTask) => {
@@ -143,25 +159,51 @@ export class ResearchService {
   /**
    * Setup watcher events for autonomous research
    */
+  // Track in-flight research to prevent duplicates
+  private inFlightResearch: Map<string, Set<string>> = new Map();
+
   private setupWatcherEvents(): void {
     // When watcher triggers research, execute via autonomous crew
     this.watcher.on('research:triggered', async (sessionId: string, decision: WatcherDecision) => {
+      if (!decision.query) return;
+
+      // Deduplicate: Check if similar query is already in-flight for this session
+      const sessionInFlight = this.inFlightResearch.get(sessionId) || new Set();
+      const queryKey = decision.query.toLowerCase().trim();
+
+      // Check for exact match OR similar in-flight queries
+      for (const inFlightQuery of sessionInFlight) {
+        if (inFlightQuery === queryKey || this.calculateSimilarity(inFlightQuery, queryKey) > 0.4) {
+          this.logger.debug(`Skipping similar in-flight research: "${decision.query}" (similar to "${inFlightQuery}")`);
+          return;
+        }
+      }
+
+      // Also check for similar recent research (15 min window)
+      if (this.sessionManager.hasRecentSimilarResearch(sessionId, decision.query, 900000)) { // 15 min
+        this.logger.debug(`Skipping similar recent research: "${decision.query}"`);
+        return;
+      }
+
+      // Mark as in-flight
+      sessionInFlight.add(queryKey);
+      this.inFlightResearch.set(sessionId, sessionInFlight);
+
       this.logger.info(`Watcher triggered research for ${sessionId}`, {
         query: decision.query,
         type: decision.researchType,
         confidence: decision.confidence,
       });
 
-      if (!decision.query) return;
-
       try {
         // Use autonomous crew for background research
+        // Always use 'quick' for background research - user can request deeper manually
         const crew = getAutonomousCrew();
         const result = await crew.explore({
           query: decision.query,
           sessionId,
           context: decision.alternativeHint,
-          depth: decision.researchType === 'direct' ? 'medium' : 'deep',
+          depth: 'quick',
         });
 
         // Queue injection when complete
@@ -172,16 +214,36 @@ export class ResearchService {
             relevance: result.confidence,
             priority: decision.priority,
             pivot: result.pivot,
+            findingId: result.findingId,
+            sources: result.sources?.slice(0, 3).map(s => ({ title: s.title, url: s.url })),
           });
 
           this.logger.info(`Research complete for ${sessionId}`, {
             query: decision.query,
             confidence: result.confidence,
             hasPivot: !!result.pivot,
+            findingId: result.findingId,
           });
+
+          // CRITICAL: Record research in session history to prevent duplicates
+          this.sessionManager.recordResearch(
+            sessionId,
+            decision.query,
+            result.findingId || 'unknown',
+            result.confidence
+          );
         }
       } catch (error) {
         this.logger.error(`Background research failed for ${sessionId}`, error);
+      } finally {
+        // Remove from in-flight tracking
+        const sessionInFlight = this.inFlightResearch.get(sessionId);
+        if (sessionInFlight) {
+          sessionInFlight.delete(queryKey);
+          if (sessionInFlight.size === 0) {
+            this.inFlightResearch.delete(sessionId);
+          }
+        }
       }
     });
 
@@ -213,7 +275,7 @@ export class ResearchService {
     // Queue new research
     this.app.post('/api/research', async (req, res): Promise<void> => {
       try {
-        const { query, context, depth, priority, sessionId } = req.body;
+        const { query, context, depth, priority, sessionId, trigger } = req.body;
 
         if (!query || typeof query !== 'string') {
           res.status(400).json(this.errorResponse('Query is required'));
@@ -224,7 +286,7 @@ export class ResearchService {
           query,
           context,
           depth: depth as ResearchDepth || 'medium',
-          trigger: 'manual',
+          trigger: trigger || 'manual', // 'user' from dashboard, 'manual' from Claude
           sessionId,
           priority: priority || 5,
         });
@@ -325,6 +387,10 @@ export class ResearchService {
         return;
       }
 
+      // Create session in SessionManager (in-memory for injections)
+      this.sessionManager.getOrCreateSession(sessionId, projectPath);
+
+      // Also persist to database
       const db = getDatabase();
       db.upsertSession({
         id: sessionId,
@@ -352,6 +418,26 @@ export class ResearchService {
       const db = getDatabase();
       const sessions = db.getActiveSessions(sinceMs);
       res.json(this.successResponse(sessions));
+    });
+
+    // Debug: Get session state from SessionManager (in-memory)
+    this.app.get('/api/sessions/:sessionId/debug', (req, res) => {
+      const session = this.sessionManager.getSession(req.params.sessionId);
+      if (!session) {
+        res.status(404).json(this.errorResponse('Session not found in memory'));
+        return;
+      }
+      res.json(this.successResponse({
+        sessionId: session.sessionId,
+        pendingInjections: session.pendingInjections.length,
+        injectionDetails: session.pendingInjections.map(i => ({
+          query: i.query,
+          queuedAt: i.queuedAt,
+          findingId: i.findingId,
+        })),
+        messageCount: session.messageCount,
+        isActive: session.isActive,
+      }));
     });
 
     // ===== Conversation Streaming Routes =====
@@ -405,7 +491,8 @@ export class ResearchService {
     });
 
     // Process tool use from PostToolUse hook
-    this.app.post('/api/conversation/tool-use', async (req, res) => {
+    // CRITICAL: Must respond quickly (<1s) to not block Claude
+    this.app.post('/api/conversation/tool-use', (req, res) => {
       try {
         const { sessionId, toolName, toolInput, toolOutput, projectPath } = req.body;
         if (!sessionId || !toolName) {
@@ -413,33 +500,45 @@ export class ResearchService {
           return;
         }
 
-        // Use SessionManager to track the tool use
+        // Use SessionManager to track the tool use (fast, in-memory)
         this.sessionManager.addToolUse(sessionId, toolName, toolInput || {}, toolOutput || '', projectPath);
 
-        // Check proactive triggers (stuck detection, periodic analysis)
-        const proactiveDecision = this.watcher.checkProactiveTriggers(sessionId);
-        if (proactiveDecision?.shouldResearch) {
-          this.logger.info(`Proactive research triggered for ${sessionId}`, {
-            reason: proactiveDecision.reason,
-            query: proactiveDecision.query,
-          });
-          // Emit the research trigger - watcher events will handle execution
-          this.watcher.emit('research:triggered', sessionId, proactiveDecision);
-        }
-
-        // Check for pending injections from previous research
+        // Check for pending injections from previous research (fast, in-memory)
         const pendingInjection = this.sessionManager.popInjection(sessionId);
         let injection: string | null = null;
 
         if (pendingInjection) {
           // Format injection with pivot info if present
           injection = this.formatInjection(pendingInjection);
+
+          // Log injection for dashboard visibility
+          if (pendingInjection.findingId) {
+            const db = this.queue.getDatabase();
+            db.logInjection({
+              findingId: pendingInjection.findingId,
+              sessionId,
+              injectedAt: Date.now(),
+              injectionLevel: 1,
+              triggerReason: 'proactive',
+              followupInjected: false,
+              resolvedIssue: false,
+            });
+            this.logger.info('Injection delivered', {
+              sessionId,
+              query: pendingInjection.query,
+              findingId: pendingInjection.findingId,
+            });
+            // Broadcast injection event to dashboard
+            this.broadcast('injection', {
+              sessionId,
+              query: pendingInjection.query,
+              summary: pendingInjection.summary.slice(0, 200),
+              injectedAt: Date.now(),
+            });
+          }
         }
 
-        // Run watcher analysis
-        const decision = await this.watcher.analyze(sessionId, 'tool_output');
-
-        // Also maintain legacy analyzer for injection handling
+        // Also check legacy analyzer for injection (fast, in-memory)
         const analyzer = getConversationAnalyzer();
         const { opportunity, injection: legacyInjection } = analyzer.processToolUse(
           sessionId,
@@ -452,23 +551,30 @@ export class ResearchService {
         // Use new injection if available, otherwise fallback to legacy
         injection = injection || legacyInjection;
 
-        // Combine decisions
-        const shouldResearch = decision.shouldResearch ||
-          (opportunity.shouldResearch && opportunity.confidence > 0.6);
-        const query = decision.query || opportunity.query;
-
-        if (shouldResearch && query) {
-          analyzer.markResearchPerformed(sessionId);
-          // Watcher events will handle the research execution
-        }
-
+        // RESPOND IMMEDIATELY - Don't block on slow analysis
+        // NOTE: We removed checkProactiveTriggers() - dual trigger was causing duplicate research spam
         res.json(this.successResponse({
           injection,
-          researchQueued: shouldResearch,
-          queuedQuery: query,
-          researchType: decision.researchType,
-          pivot: decision.alternativeHint,
+          researchQueued: opportunity.shouldResearch && opportunity.confidence > 0.6,
+          queuedQuery: opportunity.query,
+          researchType: 'proactive',
+          pivot: null,
         }));
+
+        // BACKGROUND: Run watcher analysis after response sent (single trigger path)
+        // This won't block the hook
+        setImmediate(async () => {
+          try {
+            // Only run watcher analysis - single trigger path prevents duplicates
+            const decision = await this.watcher.analyze(sessionId, 'tool_output');
+            if (decision.shouldResearch && decision.query) {
+              analyzer.markResearchPerformed(sessionId);
+              this.watcher.emit('research:triggered', sessionId, decision);
+            }
+          } catch (err) {
+            this.logger.error('Background analysis failed', err);
+          }
+        });
       } catch (error) {
         this.logger.error('Failed to process tool use', error);
         res.status(500).json(this.errorResponse(String(error)));
@@ -627,6 +733,33 @@ export class ResearchService {
       }
     });
 
+    // Get recent autonomous findings (for dashboard visibility)
+    this.app.get('/api/findings', async (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit as string) || 20;
+        const db = this.queue.getDatabase();
+        const findings = db.getRecentFindings(limit);
+        res.json(this.successResponse(findings));
+      } catch (error) {
+        this.logger.error('Failed to get findings', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
+    // Get recent injections (for dashboard visibility)
+    this.app.get('/api/injections', async (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit as string) || 20;
+        const sessionId = req.query.sessionId as string;
+        const db = this.queue.getDatabase();
+        const injections = db.getRecentInjections(limit, sessionId);
+        res.json(this.successResponse(injections));
+      } catch (error) {
+        this.logger.error('Failed to get injections', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
     // ===== Config Routes =====
 
     this.app.get('/api/config', (_req, res) => {
@@ -746,22 +879,49 @@ export class ResearchService {
   }
 
   /**
-   * Format injection content with pivot handling
+   * Calculate Jaccard similarity between two strings
+   * Used for deduplicating similar research queries
+   */
+  private calculateSimilarity(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+
+    if (wordsA.size === 0 || wordsB.size === 0) return 0;
+
+    const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
+    const union = new Set([...wordsA, ...wordsB]);
+
+    return intersection.size / union.size;
+  }
+
+  /**
+   * Format injection content with pivot handling and sources
    */
   private formatInjection(pending: {
     summary: string;
     query: string;
     relevance: number;
+    findingId?: string;
     pivot?: {
       alternative: string;
       reason: string;
       urgency: 'low' | 'medium' | 'high';
     };
+    sources?: Array<{ title: string; url: string }>;
   }): string {
     const parts: string[] = [];
 
     parts.push(`<research-context query="${pending.query}">`);
     parts.push(pending.summary);
+
+    // Add sources if present
+    if (pending.sources && pending.sources.length > 0) {
+      parts.push('');
+      parts.push('**Sources:**');
+      for (const source of pending.sources) {
+        parts.push(`- [${source.title}](${source.url})`);
+      }
+    }
 
     // Add pivot suggestion if present
     if (pending.pivot) {
@@ -771,6 +931,12 @@ export class ResearchService {
       parts.push(`${urgencyEmoji} **Alternative Approach Detected:**`);
       parts.push(`${pending.pivot.alternative}`);
       parts.push(`_Reason: ${pending.pivot.reason}_`);
+    }
+
+    // Add findingId for progressive disclosure (allows requesting more detail)
+    if (pending.findingId) {
+      parts.push('');
+      parts.push(`_More detail available: use /research-detail ${pending.findingId}_`);
     }
 
     parts.push('</research-context>');
@@ -831,19 +997,21 @@ export class ResearchService {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      padding-left: 0;
     }
     .logo {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 1rem;
       font-size: 1.25rem;
       font-weight: 600;
       color: var(--primary);
       text-decoration: none;
+      margin-left: -1rem;
     }
     .logo-icon {
-      width: 36px;
-      height: 36px;
+      width: 80px;
+      height: 80px;
       object-fit: contain;
       transition: opacity 0.3s ease;
     }
@@ -947,6 +1115,40 @@ export class ResearchService {
     .task-badge.running { background: var(--info-light); color: #1d4ed8; }
     .task-badge.completed { background: var(--success-light); color: #15803d; }
     .task-badge.failed { background: var(--error-light); color: #b91c1c; }
+    .task-badge.user { background: #f0f9ff; color: #0369a1; }
+    .task-badge.manual { background: #fef3c7; color: #b45309; }
+    .task-badge.autonomous { background: #faf5ff; color: #7c3aed; }
+    .task-badge.injected { background: #ecfdf5; color: #059669; }
+
+    .task-card.user { border-left: 3px solid #0369a1; }
+    .task-card.manual { border-left: 3px solid #b45309; }
+    .task-card.autonomous { border-left: 3px solid #7c3aed; }
+    .task-card.injected { border-left: 3px solid #059669; }
+
+    .filter-bar {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      padding: 0.5rem;
+      background: var(--bg);
+      border-radius: 8px;
+    }
+    .filter-btn {
+      padding: 0.5rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--card);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: all 0.15s;
+    }
+    .filter-btn:hover { background: var(--bg); }
+    .filter-btn.active {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
 
     .task-main { flex: 1; min-width: 0; }
     .task-query {
@@ -1171,6 +1373,14 @@ export class ResearchService {
           <span class="header-stat-value" id="stat-completed">0</span>
           <span class="header-stat-label">completed</span>
         </div>
+        <div class="header-stat" style="border-left: 1px solid var(--border); padding-left: 1rem; margin-left: 0.5rem;">
+          <span class="header-stat-value" id="stat-findings">0</span>
+          <span class="header-stat-label">findings</span>
+        </div>
+        <div class="header-stat">
+          <span class="header-stat-value" id="stat-injections" style="color: var(--success);">0</span>
+          <span class="header-stat-label">injected</span>
+        </div>
       </div>
     </div>
   </header>
@@ -1187,6 +1397,14 @@ export class ResearchService {
       <button type="submit" class="submit-btn">Research</button>
     </form>
 
+    <div class="filter-bar">
+      <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
+      <button class="filter-btn" data-filter="user" onclick="setFilter('user')">👤 User</button>
+      <button class="filter-btn" data-filter="manual" onclick="setFilter('manual')">🤖 Claude</button>
+      <button class="filter-btn" data-filter="autonomous" onclick="setFilter('autonomous')">✨ Auto</button>
+      <button class="filter-btn" data-filter="injected" onclick="setFilter('injected')">💉 Injected</button>
+    </div>
+
     <div class="feed" id="feed">
       <div class="empty">
         <div class="empty-icon">&#128269;</div>
@@ -1197,15 +1415,18 @@ export class ResearchService {
 
   <script>
     const ws = new WebSocket('ws://' + location.host);
-    let tasks = [];
-    let expandedTasks = new Set();
+    let feedItems = [];
+    let expandedItems = new Set();
+    let activeFilter = 'all'; // 'all', 'manual', 'autonomous', 'injected'
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === 'status') {
         updateStats(msg.data.queue);
+      } else if (msg.type === 'injection') {
+        fetchAllData();
       } else if (msg.type.startsWith('task')) {
-        fetchTasks();
+        fetchAllData();
       }
     };
 
@@ -1245,41 +1466,79 @@ export class ResearchService {
       } catch { return url; }
     }
 
-    function toggleTask(id) {
-      if (expandedTasks.has(id)) {
-        expandedTasks.delete(id);
+    function toggleItem(id) {
+      if (expandedItems.has(id)) {
+        expandedItems.delete(id);
       } else {
-        expandedTasks.add(id);
+        expandedItems.add(id);
       }
-      renderTasks();
+      renderFeed();
     }
 
-    function renderTasks() {
+    function setFilter(filter) {
+      activeFilter = filter;
+      document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.filter === filter);
+      });
+      renderFeed();
+    }
+
+    function renderFeed() {
       const feed = document.getElementById('feed');
-      if (tasks.length === 0) {
+
+      // Filter items based on active filter
+      const filtered = activeFilter === 'all'
+        ? feedItems
+        : feedItems.filter(item => item.itemType === activeFilter);
+
+      if (filtered.length === 0) {
         feed.innerHTML = \`
           <div class="empty">
             <div class="empty-icon">&#128269;</div>
-            <p>No research tasks yet. Enter a query above to start.</p>
+            <p>\${activeFilter === 'all' ? 'No research activity yet. Enter a query above to start.' : 'No ' + activeFilter + ' items found.'}</p>
           </div>
         \`;
         return;
       }
 
-      feed.innerHTML = tasks.map(t => {
-        const isExpanded = expandedTasks.has(t.id);
-        const hasResult = t.result && t.result.summary;
-        const hasSources = t.result && t.result.sources && t.result.sources.length > 0;
+      feed.innerHTML = filtered.map(item => {
+        const isExpanded = expandedItems.has(item.id);
+        const hasContent = item.summary || (item.result && item.result.summary);
+        const hasSources = item.sources?.length > 0 || (item.result?.sources?.length > 0);
+        const sources = item.sources || item.result?.sources || [];
+
+        // Get badge info based on item type
+        let badgeClass, badgeText, badgeIcon;
+        switch(item.itemType) {
+          case 'user':
+            badgeClass = item.status || 'user';
+            badgeText = item.status === 'running' ? 'running' : 'user';
+            badgeIcon = item.status === 'running' ? '<span class="spinner"></span>' : '👤 ';
+            break;
+          case 'manual':
+            badgeClass = item.status || 'manual';
+            badgeText = item.status === 'running' ? 'running' : 'manual';
+            badgeIcon = item.status === 'running' ? '<span class="spinner"></span>' : '🤖 ';
+            break;
+          case 'autonomous':
+            badgeClass = 'autonomous';
+            badgeText = 'auto';
+            badgeIcon = '✨ ';
+            break;
+          case 'injected':
+            badgeClass = 'injected';
+            badgeText = 'injected';
+            badgeIcon = '💉 ';
+            break;
+        }
 
         let contentHtml = '';
-        if (hasResult) {
-          // Use fullContent if available (includes summary + key findings), otherwise fallback to summary
-          const content = t.result.fullContent || t.result.summary;
-          // Convert markdown-like formatting to HTML
+        if (hasContent) {
+          const content = item.summary || item.result?.fullContent || item.result?.summary || '';
           const formattedContent = escapeHtml(content)
-            .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')  // **bold** → <strong>
-            .replace(/\\*(.+?)\\*/g, '<em>$1</em>')              // *italic* → <em>
-            .replace(/\\\`(.+?)\\\`/g, '<code>$1</code>')          // \`code\` → <code>
+            .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
+            .replace(/\\*(.+?)\\*/g, '<em>$1</em>')
+            .replace(/\\\`(.+?)\\\`/g, '<code>$1</code>')
             .replace(/## (.+)/g, '<strong class="findings-header">$1</strong>')
             .replace(/^- (.+)$/gm, '<li>$1</li>')
             .replace(/(<li>.*<\\/li>)/gs, '<ul class="findings-list">$1</ul>')
@@ -1292,8 +1551,9 @@ export class ResearchService {
             </div>
           \`;
 
-          if (t.result.confidence !== undefined) {
-            const pct = Math.round(t.result.confidence * 100);
+          const confidence = item.confidence ?? item.result?.confidence;
+          if (confidence !== undefined) {
+            const pct = Math.round(confidence * 100);
             contentHtml += \`
               <div class="confidence-bar">
                 <label>Confidence</label>
@@ -1306,11 +1566,11 @@ export class ResearchService {
           }
         }
 
-        if (hasSources) {
+        if (hasSources && sources.length > 0) {
           contentHtml += \`
             <div class="task-sources">
-              <h4>Sources (\${t.result.sources.length})</h4>
-              \${t.result.sources.slice(0, 5).map(s => \`
+              <h4>Sources (\${sources.length})</h4>
+              \${sources.slice(0, 5).map(s => \`
                 <a href="\${escapeHtml(s.url)}" target="_blank" class="source-item">
                   <img class="source-favicon" src="https://www.google.com/s2/favicons?domain=\${getDomain(s.url)}&sz=32" alt="">
                   <div class="source-info">
@@ -1324,23 +1584,31 @@ export class ResearchService {
           \`;
         }
 
+        // Extra info for injected items
+        let metaExtra = '';
+        if (item.itemType === 'injected' && item.sessionId) {
+          metaExtra = \`<span>· session: \${item.sessionId.slice(0, 8)}...</span>\`;
+        } else if (item.itemType === 'manual' && item.result) {
+          metaExtra = \`<span>· \${item.result.tokensUsed || 0} tokens</span>\`;
+        }
+
         return \`
-          <div class="task-card" data-id="\${t.id}">
+          <div class="task-card \${item.itemType}" data-id="\${item.id}">
             <div class="task-card-header">
-              <span class="task-badge \${t.status}">
-                \${t.status === 'running' ? '<span class="spinner"></span>' : ''}\${t.status}
+              <span class="task-badge \${badgeClass}">
+                \${badgeIcon}\${badgeText}
               </span>
               <div class="task-main">
-                <div class="task-query">\${escapeHtml(t.query)}</div>
+                <div class="task-query">\${escapeHtml(item.query)}</div>
                 <div class="task-meta">
-                  <span class="task-depth">\${t.depth}</span>
-                  <span>\${formatTime(t.createdAt)}</span>
-                  \${t.result ? \`<span>· \${t.result.tokensUsed || 0} tokens</span>\` : ''}
+                  <span class="task-depth">\${item.depth || 'medium'}</span>
+                  <span>\${formatTime(item.timestamp)}</span>
+                  \${metaExtra}
                 </div>
               </div>
               <div class="task-actions">
-                \${hasResult ? \`
-                  <button class="task-action-btn \${isExpanded ? 'active' : ''}" onclick="toggleTask('\${t.id}')">
+                \${hasContent ? \`
+                  <button class="task-action-btn \${isExpanded ? 'active' : ''}" onclick="toggleItem('\${item.id}')">
                     \${isExpanded ? 'Hide' : 'View'} Details
                   </button>
                 \` : ''}
@@ -1352,12 +1620,84 @@ export class ResearchService {
       }).join('');
     }
 
-    async function fetchTasks() {
-      const res = await fetch('/api/tasks?limit=30');
-      const json = await res.json();
-      if (json.success) {
-        tasks = json.data;
-        renderTasks();
+    async function fetchAllData() {
+      try {
+        const [tasksRes, findingsRes, injectionsRes] = await Promise.all([
+          fetch('/api/tasks?limit=50'),
+          fetch('/api/findings?limit=100'),
+          fetch('/api/injections?limit=50')
+        ]);
+        const [tasksJson, findingsJson, injectionsJson] = await Promise.all([
+          tasksRes.json(),
+          findingsRes.json(),
+          injectionsRes.json()
+        ]);
+
+        const items = [];
+
+        // Add queued/manual tasks (distinguish 'user' from 'manual')
+        if (tasksJson.success) {
+          for (const t of tasksJson.data) {
+            // Use trigger type for itemType: 'user' for dashboard, 'manual' for Claude
+            const itemType = t.trigger === 'user' ? 'user' : 'manual';
+            items.push({
+              id: 'task-' + t.id,
+              itemType,
+              trigger: t.trigger,
+              query: t.query,
+              summary: t.result?.summary,
+              sources: t.result?.sources,
+              confidence: t.result?.confidence,
+              depth: t.depth,
+              status: t.status,
+              result: t.result,
+              timestamp: t.createdAt
+            });
+          }
+        }
+
+        // Add autonomous findings
+        if (findingsJson.success) {
+          for (const f of findingsJson.data) {
+            items.push({
+              id: 'finding-' + f.id,
+              itemType: 'autonomous',
+              query: f.query,
+              summary: f.summary,
+              sources: f.sources,
+              confidence: f.confidence,
+              depth: f.depth || 'medium',
+              timestamp: f.createdAt
+            });
+          }
+        }
+
+        // Add injections
+        if (injectionsJson.success) {
+          for (const i of injectionsJson.data) {
+            items.push({
+              id: 'injection-' + i.id,
+              itemType: 'injected',
+              query: i.query,
+              summary: i.summary,
+              confidence: i.confidence,
+              sessionId: i.sessionId,
+              timestamp: i.injectedAt
+            });
+          }
+        }
+
+        // Sort by timestamp descending
+        items.sort((a, b) => b.timestamp - a.timestamp);
+        feedItems = items;
+
+        // Update stats
+        document.getElementById('stat-findings').textContent = findingsJson.success ? findingsJson.data.length : 0;
+        document.getElementById('stat-injections').textContent = injectionsJson.success ? injectionsJson.data.length : 0;
+
+        renderFeed();
+      } catch (e) {
+        console.error('Failed to fetch data:', e);
       }
     }
 
@@ -1379,17 +1719,17 @@ export class ResearchService {
       await fetch('/api/research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, depth })
+        body: JSON.stringify({ query, depth, trigger: 'user' })
       });
 
       input.value = '';
-      fetchTasks();
+      fetchAllData();
     };
 
-    fetchTasks();
+    fetchAllData();
     fetchStats();
     setInterval(fetchStats, 3000);
-    setInterval(fetchTasks, 5000);
+    setInterval(fetchAllData, 5000);
   </script>
 </body>
 </html>`;

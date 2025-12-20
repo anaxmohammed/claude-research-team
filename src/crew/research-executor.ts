@@ -150,6 +150,9 @@ export class ResearchExecutor {
         db.saveFinding(finding);
         this.logger.info(`Research stored in local database: ${findingId}`);
 
+        // Add findingId to result for progressive disclosure
+        result.findingId = findingId;
+
         // Step 5: Optionally inject to claude-mem if high quality
         const injectionResult = await memory.injectFindingIfQualified(finding, task.sessionId);
         if (injectionResult.injected) {

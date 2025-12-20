@@ -363,7 +363,7 @@ When you send a prompt, the `UserPromptSubmit` hook streams it to the research s
 - Comparisons: "X vs Y", "best way to..."
 ```
 
-If confidence score ≥ 0.6, research is queued in the background.
+If confidence score ≥ 0.85, research is queued in the background (subject to rate limits).
 
 ### 3. Research Execution
 
@@ -390,7 +390,11 @@ Rate limiting in Node.js can be implemented using token bucket
 or sliding window algorithms. Popular libraries include
 rate-limiter-flexible and express-rate-limit.
 
-Source: Rate Limiting Best Practices (https://example.com/rate-limiting)
+**Sources:**
+- [Rate Limiting Best Practices](https://example.com/rate-limiting)
+- [Express Rate Limit Documentation](https://example.com/express-rate-limit)
+
+_More detail available: use /research-detail abc123_
 </research-context>
 ```
 
@@ -398,11 +402,20 @@ Source: Rate Limiting Best Practices (https://example.com/rate-limiting)
 
 ## Research Depths
 
-| Depth | Time | Max Searches | Max Scrapes | Best For |
-|-------|------|--------------|-------------|----------|
-| `quick` | ~15s | 5 | 2 | Simple facts, definitions |
-| `medium` | ~30s | 10 | 4 | How-to questions, technical docs |
-| `deep` | ~60s | 20 | 8 | Complex comparisons, thorough research |
+| Depth | Iterations | Max Searches | Max Scrapes | Best For |
+|-------|------------|--------------|-------------|----------|
+| `quick` | 1 | 5 | 2 | Simple facts, definitions (default for background) |
+| `medium` | 1 | 10 | 4 | How-to questions, technical docs |
+| `deep` | 2 | 20 | 8 | Complex comparisons, thorough research |
+
+### Rate Limiting
+
+To prevent runaway API costs, the system enforces:
+- **Global limit**: Maximum 20 background researches per hour
+- **Session cooldown**: 1 minute between researches per session
+- **Confidence threshold**: 0.85 (only high-confidence triggers execute)
+
+Manual research via dashboard or skills bypasses these limits.
 
 ---
 

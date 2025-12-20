@@ -19,7 +19,8 @@ export type ResearchStatus =
 export type TriggerSource =
   | 'user_prompt'   // Detected from user message
   | 'tool_output'   // Detected from tool result
-  | 'manual'        // Manually queued via API
+  | 'manual'        // Manually queued via API (by Claude)
+  | 'user'          // User-initiated via dashboard search
   | 'scheduled';    // Scheduled background research
 
 export interface ResearchTask {
@@ -44,6 +45,7 @@ export interface ResearchResult {
   sources: ResearchSource[];
   tokensUsed: number;      // Approximate tokens in summary
   confidence: number;      // 0-1 confidence score
+  findingId?: string;      // ID for progressive disclosure lookup
   pivot?: PivotSuggestion; // Alternative approach detected
 }
 

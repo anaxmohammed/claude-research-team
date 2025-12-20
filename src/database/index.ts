@@ -284,6 +284,23 @@ export class ResearchDatabase {
     `).run(...params);
   }
 
+  /**
+   * Mark any orphaned "running" tasks as failed.
+   * Called on server startup to clean up tasks from crashed previous instances.
+   * Returns the number of tasks cleaned up.
+   */
+  cleanupOrphanedTasks(): number {
+    const result = this.db.prepare(`
+      UPDATE research_tasks
+      SET status = 'failed',
+          error = 'Server restart - task was orphaned',
+          completed_at = ?
+      WHERE status = 'running'
+    `).run(Date.now());
+
+    return result.changes;
+  }
+
   saveTaskResult(id: string, result: ResearchResult): void {
     this.db.prepare(`
       UPDATE research_tasks SET
@@ -334,6 +351,16 @@ export class ResearchDatabase {
       ORDER BY priority DESC, created_at ASC
       LIMIT ?
     `).all(limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => this.rowToTask(row));
+  }
+
+  getRunningTasks(): ResearchTask[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM research_tasks
+      WHERE status = 'running'
+      ORDER BY started_at ASC
+    `).all() as Array<Record<string, unknown>>;
 
     return rows.map((row) => this.rowToTask(row));
   }
@@ -638,6 +665,46 @@ export class ResearchDatabase {
       followupInjected: (row.followup_injected as number) === 1,
       effectivenessScore: row.effectiveness_score as number | undefined,
       resolvedIssue: (row.resolved_issue as number) === 1,
+    }));
+  }
+
+  /**
+   * Get recent injections with finding details for dashboard visibility
+   */
+  getRecentInjections(limit: number = 20, sessionId?: string): Array<{
+    id: number;
+    sessionId: string;
+    injectedAt: number;
+    query: string;
+    summary: string;
+    confidence: number;
+    triggerReason?: string;
+  }> {
+    const query = sessionId
+      ? `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason,
+                rf.query, rf.summary, rf.confidence
+         FROM injection_log il
+         JOIN research_findings rf ON il.finding_id = rf.id
+         WHERE il.session_id = ?
+         ORDER BY il.injected_at DESC LIMIT ?`
+      : `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason,
+                rf.query, rf.summary, rf.confidence
+         FROM injection_log il
+         JOIN research_findings rf ON il.finding_id = rf.id
+         ORDER BY il.injected_at DESC LIMIT ?`;
+
+    const rows = sessionId
+      ? this.db.prepare(query).all(sessionId, limit) as Array<Record<string, unknown>>
+      : this.db.prepare(query).all(limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: row.id as number,
+      sessionId: row.session_id as string,
+      injectedAt: row.injected_at as number,
+      query: row.query as string,
+      summary: row.summary as string,
+      confidence: row.confidence as number,
+      triggerReason: row.trigger_reason as string | undefined,
     }));
   }
 

@@ -60,6 +60,7 @@ export interface CrewResult {
   tokensUsed: number;
   pivot?: PivotSuggestion;
   duration: number;
+  findingId?: string; // ID of stored finding for injection tracking
 }
 
 /**
@@ -83,12 +84,12 @@ export class AutonomousResearchCrew extends EventEmitter {
   private specialists: Map<string, BaseSpecialistAgent>;
   private logger: Logger;
 
-  // Configuration
-  private readonly DEFAULT_MAX_ITERATIONS = 5;
+  // Configuration - CONSERVATIVE to save tokens
+  private readonly DEFAULT_MAX_ITERATIONS = 1;  // Default to 1 iteration (quick)
   private readonly DEPTH_ITERATIONS: Record<string, number> = {
     quick: 1,
-    medium: 2,
-    deep: 4,
+    medium: 1,   // Reduced from 2
+    deep: 2,     // Reduced from 4
   };
   private readonly PARALLEL_SPECIALISTS = true;
 
@@ -187,8 +188,11 @@ export class AutonomousResearchCrew extends EventEmitter {
     // Build result
     const result = this.buildResult(directive.query, synthesis, allFindings, iteration, startTime, detectedPivot);
 
-    // Store final result in memory
-    await this.storeResult(directive.query, result, directive.sessionId);
+    // Store final result in memory and get the finding ID
+    const findingId = await this.storeResult(directive.query, result, directive.sessionId);
+    if (findingId) {
+      result.findingId = findingId;
+    }
 
     this.emit('research:complete', result);
     this.logger.info('Exploration complete', {
@@ -303,42 +307,17 @@ export class AutonomousResearchCrew extends EventEmitter {
 
   /**
    * Store findings incrementally
+   * NOTE: Disabled - partial findings were cluttering the dashboard.
+   * Only the final synthesized result is stored via storeResult().
    */
   private async storeFindings(
-    query: string,
-    findings: Finding[],
+    _query: string,
+    _findings: Finding[],
     _sessionId?: string
   ): Promise<void> {
-    if (findings.length === 0) return;
-
-    try {
-      const db = getDatabase();
-
-      // Store each finding as a partial research finding in local DB
-      for (const finding of findings) {
-        const partialFinding: ResearchFinding = {
-          id: uuidv4(),
-          query: query,
-          summary: `Partial finding from ${finding.specialist}: ${finding.results.length} results`,
-          keyPoints: finding.results.slice(0, 5).map(r => r.title),
-          fullContent: finding.scraped.map(s => s.content).join('\n\n').slice(0, 5000),
-          sources: finding.results.map((r, i) => ({
-            title: r.title,
-            url: r.url,
-            snippet: r.snippet,
-            relevance: r.relevance ?? (1 - i * 0.1),
-          })),
-          domain: undefined,
-          depth: 'deep',
-          confidence: 0.3, // Partial findings have low confidence
-          createdAt: finding.timestamp,
-        };
-
-        db.saveFinding(partialFinding);
-      }
-    } catch (error) {
-      this.logger.debug('Failed to store partial findings', error);
-    }
+    // Intentionally empty - only store final synthesized result
+    // Partial findings were creating 5-7 entries per research query
+    return;
   }
 
   /**
@@ -348,7 +327,7 @@ export class AutonomousResearchCrew extends EventEmitter {
     query: string,
     result: CrewResult,
     sessionId?: string
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     try {
       const db = getDatabase();
       const memory = getMemoryIntegration();
@@ -374,7 +353,7 @@ export class AutonomousResearchCrew extends EventEmitter {
           relevance: s.relevance ?? 0.5,
         })),
         domain: this.inferDomain(query),
-        depth: 'deep',
+        depth: 'quick',  // Background research is always quick
         confidence: result.confidence,
         createdAt: Date.now(),
       };
@@ -390,8 +369,11 @@ export class AutonomousResearchCrew extends EventEmitter {
       } else {
         this.logger.debug(`Not injected to claude-mem: ${injectionResult.reason}`);
       }
+
+      return finding.id;
     } catch (error) {
       this.logger.debug('Failed to store final result', error);
+      return undefined;
     }
   }
 

@@ -54,11 +54,13 @@ async function handlePostToolUse(input: PostToolUseHookInput): Promise<HookRespo
         sessionId: input.session_id,
         toolName: input.tool_name,
         toolInput: toolInput,
-        toolOutput: input.tool_response?.slice(0, 10000), // Limit size
+        toolOutput: typeof input.tool_response === 'string'
+          ? input.tool_response.slice(0, 10000)
+          : JSON.stringify(input.tool_response)?.slice(0, 10000), // Limit size
         projectPath: input.cwd,
         timestamp: Date.now(),
       }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(5000), // 5s timeout, server responds fast now
     });
 
     if (streamResponse.ok) {

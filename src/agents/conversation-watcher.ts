@@ -60,17 +60,49 @@ export class ConversationWatcher extends EventEmitter {
   // Cooldown tracking per session
   private lastResearchTime: Map<string, number> = new Map();
 
-  // Configuration
-  private readonly COOLDOWN_MS = 30000;            // 30s between research per session
-  private readonly MIN_CONFIDENCE_DIRECT = 0.4;    // Threshold for direct research
-  private readonly MIN_CONFIDENCE_ALTERNATIVE = 0.6; // Higher bar for suggesting pivots
-  private readonly MIN_CONFIDENCE_VALIDATION = 0.5;  // For confirming approaches
-  // Reserved for future rate limiting
-  // private readonly MAX_ANALYSIS_CALLS = 3;
+  // GLOBAL rate limiting - prevents runaway costs
+  private globalResearchCount = 0;
+  private globalResearchResetTime = Date.now();
+
+  // Configuration - CONSERVATIVE to prevent token burn
+  private readonly COOLDOWN_MS = 60000;            // 1 minute between research per session
+  private readonly MIN_CONFIDENCE_DIRECT = 0.85;   // High threshold - only research when confident
+  private readonly MIN_CONFIDENCE_ALTERNATIVE = 0.9; // Very high bar for suggesting pivots
+  private readonly MIN_CONFIDENCE_VALIDATION = 0.85;  // For confirming approaches
+  private readonly MAX_GLOBAL_RESEARCH_PER_HOUR = 20;  // Hard limit: max 20 researches per hour globally
 
   constructor() {
     super();
     this.logger = new Logger('ConversationWatcher');
+  }
+
+  /**
+   * Check global rate limit
+   */
+  private checkGlobalRateLimit(): boolean {
+    const now = Date.now();
+    const hourMs = 60 * 60 * 1000;
+
+    // Reset counter every hour
+    if (now - this.globalResearchResetTime > hourMs) {
+      this.globalResearchCount = 0;
+      this.globalResearchResetTime = now;
+    }
+
+    if (this.globalResearchCount >= this.MAX_GLOBAL_RESEARCH_PER_HOUR) {
+      this.logger.warn(`Global rate limit reached: ${this.globalResearchCount}/${this.MAX_GLOBAL_RESEARCH_PER_HOUR} per hour`);
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Increment global research counter
+   */
+  private incrementGlobalCounter(): void {
+    this.globalResearchCount++;
+    this.logger.info(`Global research count: ${this.globalResearchCount}/${this.MAX_GLOBAL_RESEARCH_PER_HOUR} this hour`);
   }
 
   /**
@@ -91,6 +123,11 @@ export class ConversationWatcher extends EventEmitter {
     if (trigger === 'user_prompt') {
       this.logger.debug(`Skipping analysis for user prompt - manual research should be used`);
       return this.createNoResearchDecision('User prompts should use manual research()');
+    }
+
+    // Check GLOBAL rate limit first - prevents runaway costs
+    if (!this.checkGlobalRateLimit()) {
+      return this.createNoResearchDecision('Global rate limit reached');
     }
 
     // Check cooldown
@@ -133,6 +170,7 @@ export class ConversationWatcher extends EventEmitter {
       if (decision.shouldResearch) {
         this.lastResearchTime.set(sessionId, Date.now());
         this.sessionManager.markAnalyzed(sessionId);
+        this.incrementGlobalCounter();  // Track global research count
         this.emit('research:triggered', sessionId, decision);
       }
 

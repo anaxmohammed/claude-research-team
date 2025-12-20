@@ -54,6 +54,12 @@ export class QueueManager extends EventEmitter {
       return;
     }
 
+    // Clean up any orphaned tasks from previous server instances
+    const orphanedCount = this.db.cleanupOrphanedTasks();
+    if (orphanedCount > 0) {
+      this.logger.info(`Cleaned up ${orphanedCount} orphaned task(s) from previous server instance`);
+    }
+
     this.logger.info('Starting queue processor', this.config);
 
     // Process queue every 2 seconds
@@ -133,6 +139,20 @@ export class QueueManager extends EventEmitter {
     this.isProcessing = true;
 
     try {
+      // Check for stale running tasks (tasks that have exceeded timeout but weren't cleaned up)
+      const staleThreshold = Date.now() - (this.config.taskTimeoutMs * 2); // 2x timeout
+      const staleTasks = this.db.getRunningTasks?.() || [];
+      for (const task of staleTasks) {
+        if (task.startedAt && task.startedAt < staleThreshold) {
+          this.logger.warn('Cleaning up stale task', { id: task.id, startedAt: task.startedAt });
+          this.db.updateTaskStatus(task.id, 'failed', {
+            completedAt: Date.now(),
+            error: 'Task exceeded timeout and became stale',
+          });
+          this.running.delete(task.id);
+        }
+      }
+
       // Check how many slots are available
       const availableSlots = this.config.maxConcurrent - this.running.size;
       if (availableSlots <= 0) return;

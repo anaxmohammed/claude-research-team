@@ -110,6 +110,7 @@ export interface SessionContext {
  */
 export interface PendingInjection {
   taskId?: string;
+  findingId?: string;
   query: string;
   summary: string;
   relevance: number;
@@ -120,6 +121,10 @@ export interface PendingInjection {
     reason: string;
     urgency: 'low' | 'medium' | 'high';
   };
+  sources?: Array<{
+    title: string;
+    url: string;
+  }>;
 }
 
 /**
@@ -315,8 +320,8 @@ export class SessionManager extends EventEmitter {
    * Queue an injection for a session
    */
   queueInjection(sessionId: string, injection: Omit<PendingInjection, 'queuedAt'>): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
+    // Create session if it doesn't exist (research can complete before session is formally started)
+    const session = this.getOrCreateSession(sessionId);
 
     session.pendingInjections.push({
       ...injection,
@@ -381,7 +386,8 @@ export class SessionManager extends EventEmitter {
       const union = new Set([...queryWords, ...researchWords]);
       const similarity = intersection.size / union.size;
 
-      if (similarity > 0.6) {
+      // Threshold of 0.5 catches more duplicates while allowing distinct queries
+      if (similarity > 0.5) {
         this.logger.debug(`Query similar to recent research: "${query}" ~ "${research.query}" (${(similarity * 100).toFixed(0)}%)`);
         return true;
       }
