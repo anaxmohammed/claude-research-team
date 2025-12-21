@@ -57,12 +57,39 @@ export class ResearchExecutor {
     const db = getDatabase();
 
     try {
-      // Step 0: Check for existing/related research in local database
+      // Step 0a: Check for semantically similar queries (deduplication)
+      if (db.isVectorReady()) {
+        const dupCheck = await db.hasRecentSimilarQueryAsync(task.query, 3600000, 0.80);
+        if (dupCheck.found && dupCheck.findingId) {
+          const existing = db.getFinding(dupCheck.findingId);
+          if (existing) {
+            this.logger.info(`Skipping - semantically similar query exists (${((dupCheck.similarity || 0) * 100).toFixed(0)}%): "${existing.query}"`);
+            return {
+              summary: `[Deduplicated] Similar research already exists: "${existing.query}"\n\n${existing.summary}`,
+              fullContent: existing.fullContent || '',
+              sources: (existing.sources || []).map(s => ({
+                title: s.title,
+                url: s.url,
+                snippet: s.snippet,
+                relevance: s.relevance,
+                qualityScore: s.qualityScore,
+              })),
+              tokensUsed: 0,
+              confidence: existing.confidence,
+              relevance: 1.0,
+              findingId: existing.id,
+            };
+          }
+        }
+      }
+
+      // Step 0b: Check for existing/related research in local database
+      // Uses semantic search when vector DB is available
       let relatedContext = '';
       try {
-        const existingFindings = db.searchFindings(task.query, 5);
+        const existingFindings = await db.findRelatedFindings(task.query, 5);
         if (existingFindings.length > 0) {
-          this.logger.info(`Found ${existingFindings.length} related findings in local database`);
+          this.logger.info(`Found ${existingFindings.length} related findings via ${db.isVectorReady() ? 'semantic' : 'keyword'} search`);
           relatedContext = this.buildRelatedContext(
             existingFindings.map(f => ({
               query: f.query,
@@ -72,7 +99,7 @@ export class ResearchExecutor {
           );
         }
       } catch (e) {
-        this.logger.debug('Local database lookup skipped', e);
+        this.logger.debug('Related research lookup skipped', e);
       }
 
       // Step 1: Search the web
@@ -92,7 +119,7 @@ export class ResearchExecutor {
 
       // Step 3: Synthesize with Claude (include related research context)
       const enrichedContext = [task.context, relatedContext].filter(Boolean).join('\n\n');
-      const synthesis = await this.synthesize(task.query, searchResults, scrapedContent, enrichedContext || undefined);
+      const synthesis = await this.synthesize(task.query, searchResults, scrapedContent, task.depth, enrichedContext || undefined);
 
       const duration = Date.now() - startTime;
       this.logger.info(`Research completed in ${duration}ms`);
@@ -133,10 +160,16 @@ export class ResearchExecutor {
         db.saveFinding(finding, task.projectPath);
         this.logger.info(`Research stored in local database: ${findingId}`, { projectPath: task.projectPath });
 
+        // Embed finding in vector database for semantic search
+        try {
+          await db.embedFinding(finding);
+          this.logger.debug(`Finding embedded in vector DB: ${findingId}`);
+        } catch (embedError) {
+          this.logger.warn('Failed to embed finding in vector DB (non-fatal)', embedError);
+        }
+
         // Add findingId to result for progressive disclosure
         result.findingId = findingId;
-
-        // claude-mem integration disabled - using own database only
       } catch (e) {
         this.logger.warn('Failed to store research', e);
       }
@@ -387,10 +420,11 @@ export class ResearchExecutor {
     searchQuery: string,
     searchResults: SearchResult[],
     scrapedContent: Array<{ url: string; content: string }>,
+    depth: ResearchDepth,
     context?: string
   ): Promise<{ summary: string; fullContent: string; confidence: number }> {
     // Build the prompt
-    const prompt = this.buildSynthesisPrompt(searchQuery, searchResults, scrapedContent, context);
+    const prompt = this.buildSynthesisPrompt(searchQuery, searchResults, scrapedContent, depth, context);
 
     try {
       // Use the AI provider abstraction
@@ -413,12 +447,13 @@ export class ResearchExecutor {
   }
 
   /**
-   * Build the synthesis prompt
+   * Build the synthesis prompt - depth-aware and action-oriented
    */
   private buildSynthesisPrompt(
     searchQuery: string,
     searchResults: SearchResult[],
     scrapedContent: Array<{ url: string; content: string }>,
+    depth: ResearchDepth,
     context?: string
   ): string {
     const parts: string[] = [];
@@ -447,10 +482,31 @@ export class ResearchExecutor {
 
     parts.push('---');
     parts.push('');
-    parts.push('Based on the above research, provide:');
-    parts.push('1. A comprehensive summary (4-6 sentences) answering the query with key details');
-    parts.push('2. Key findings as bullet points (5-8 points covering important details, code examples, best practices)');
-    parts.push('3. A confidence score (0-1) based on source quality and consistency');
+
+    // Depth-aware instructions for actionable output
+    if (depth === 'quick') {
+      parts.push('Provide a CONCISE, ACTIONABLE response:');
+      parts.push('1. A brief summary (2-3 sentences max) with the direct answer and key recommendation');
+      parts.push('2. 2-3 key points that are immediately actionable (focus on "how to" not "what is")');
+      parts.push('3. A confidence score (0-1) based on source quality');
+      parts.push('');
+      parts.push('Be direct and practical. Skip background info - focus on what the developer needs to do.');
+    } else if (depth === 'medium') {
+      parts.push('Provide a PRACTICAL response:');
+      parts.push('1. A summary (3-4 sentences) with the answer and main recommendations');
+      parts.push('2. 4-5 key findings with actionable details (code patterns, best practices, common pitfalls)');
+      parts.push('3. A confidence score (0-1) based on source quality and consistency');
+      parts.push('');
+      parts.push('Balance explanation with actionable guidance. Include specific techniques or code patterns.');
+    } else {
+      parts.push('Provide a COMPREHENSIVE response:');
+      parts.push('1. A thorough summary (4-6 sentences) covering the topic completely');
+      parts.push('2. 6-8 key findings with detailed explanations, trade-offs, and alternatives');
+      parts.push('3. A confidence score (0-1) based on source quality and consistency');
+      parts.push('');
+      parts.push('Include trade-offs, edge cases, and alternative approaches. Be thorough but organized.');
+    }
+
     parts.push('');
     parts.push('Format your response as:');
     parts.push('SUMMARY: <your summary>');

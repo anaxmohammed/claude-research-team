@@ -185,11 +185,13 @@ export class ConversationWatcher extends EventEmitter {
     }
 
     // Check database for recent similar queries (persistent deduplication)
+    // Uses semantic similarity when vector DB is available
     try {
       const db = getDatabase();
-      const dbCheck = db.hasRecentSimilarQuery(combinedText, 3600000);
+      const dbCheck = await db.hasRecentSimilarQueryAsync(combinedText, 3600000, 0.8);
       if (dbCheck.found) {
-        this.logger.debug(`Skipping - similar query already in database: "${dbCheck.existingQuery}"`);
+        const simPct = dbCheck.similarity ? ` (${(dbCheck.similarity * 100).toFixed(0)}% similar)` : '';
+        this.logger.debug(`Skipping - similar query already in database${simPct}: "${dbCheck.existingQuery}"`);
         return this.createNoResearchDecision(`Similar research in database: ${dbCheck.existingQuery}`);
       }
     } catch (e) {
@@ -229,12 +231,14 @@ export class ConversationWatcher extends EventEmitter {
       decision.projectContext = projectContext;
 
       // DEDUP CHECK: If AI suggests a query, check if it's already in the database
+      // Uses semantic similarity when vector DB is available
       if (decision.shouldResearch && decision.query) {
         try {
           const db = getDatabase();
-          const dbCheck = db.hasRecentSimilarQuery(decision.query, 3600000);
+          const dbCheck = await db.hasRecentSimilarQueryAsync(decision.query, 3600000, 0.8);
           if (dbCheck.found) {
-            this.logger.info(`Blocking duplicate query: "${decision.query}" similar to "${dbCheck.existingQuery}"`);
+            const simPct = dbCheck.similarity ? ` (${(dbCheck.similarity * 100).toFixed(0)}% similar)` : '';
+            this.logger.info(`Blocking duplicate query${simPct}: "${decision.query}" similar to "${dbCheck.existingQuery}"`);
             return this.createNoResearchDecision(`Duplicate query blocked: ${dbCheck.existingQuery}`);
           }
         } catch (e) {

@@ -2602,6 +2602,7 @@ _Previously researched - use /research-detail ${recentRelevant.id} for more_
               query: i.query,
               summary: i.summary,
               confidence: i.confidence,
+              depth: i.depth || 'quick',
               sessionId: i.sessionId,
               timestamp: i.injectedAt
             });

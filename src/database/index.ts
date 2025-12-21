@@ -20,16 +20,43 @@ import type {
   SourceQualityEntry,
   InjectionTriggerReason,
 } from '../types.js';
+import { VectorService, type SemanticSearchOptions, type VectorSearchResult } from '../vector/index.js';
 
 export class ResearchDatabase {
   private db: SqliteDatabase;
   private dataDir: string;
+  private vectorService: VectorService;
+  private vectorReady: boolean = false;
 
   constructor(dataDir: string = '~/.claude-research-team') {
     this.dataDir = dataDir.replace('~', homedir());
     this.ensureDataDir();
     this.db = openDatabaseSync(join(this.dataDir, 'research.db'));
+    this.vectorService = new VectorService();
     this.initialize();
+    // Initialize vector service asynchronously
+    this.initVectorService();
+  }
+
+  private async initVectorService(): Promise<void> {
+    try {
+      await this.vectorService.init();
+      this.vectorReady = this.vectorService.isReady();
+      if (this.vectorReady) {
+        console.log('[DB] Vector service initialized successfully');
+      }
+    } catch (error) {
+      console.warn('[DB] Vector service failed to initialize, falling back to FTS5:', error);
+      this.vectorReady = false;
+    }
+  }
+
+  isVectorReady(): boolean {
+    return this.vectorReady;
+  }
+
+  getVectorService(): VectorService {
+    return this.vectorService;
   }
 
   private ensureDataDir(): void {
@@ -740,9 +767,42 @@ export class ResearchDatabase {
 
   /**
    * Check if a similar query was recently researched (for deduplication)
-   * Uses word overlap to detect similar queries
+   * Uses semantic similarity when available, falls back to word overlap
+   */
+  async hasRecentSimilarQueryAsync(
+    query: string,
+    maxAgeMs: number = 3600000,
+    threshold: number = 0.8
+  ): Promise<{ found: boolean; existingQuery?: string; similarity?: number; findingId?: string }> {
+    // Try semantic search first if vector service is ready
+    if (this.vectorReady) {
+      const result = await this.vectorService.hasSemanticallySimilarQuery(query, maxAgeMs, threshold);
+      if (result.exists) {
+        console.log(`[DB] Found semantically similar query (${(result.similarity! * 100).toFixed(1)}%): "${result.existingQuery}"`);
+        return {
+          found: true,
+          existingQuery: result.existingQuery,
+          similarity: result.similarity,
+          findingId: result.findingId,
+        };
+      }
+    }
+
+    // Fall back to Jaccard similarity
+    return this.hasRecentSimilarQueryJaccard(query, maxAgeMs);
+  }
+
+  /**
+   * Synchronous version using Jaccard similarity only (for backward compatibility)
    */
   hasRecentSimilarQuery(query: string, maxAgeMs: number = 3600000): { found: boolean; existingQuery?: string } {
+    return this.hasRecentSimilarQueryJaccard(query, maxAgeMs);
+  }
+
+  /**
+   * Jaccard similarity fallback for deduplication
+   */
+  private hasRecentSimilarQueryJaccard(query: string, maxAgeMs: number = 3600000): { found: boolean; existingQuery?: string } {
     const cutoffTime = Date.now() - maxAgeMs;
 
     // Get recent findings
@@ -791,6 +851,90 @@ export class ResearchDatabase {
     }
 
     return { found: false };
+  }
+
+  /**
+   * Semantic search across findings using vector similarity
+   * Falls back to FTS5 if vectors not available
+   */
+  async semanticSearchFindings(
+    query: string,
+    options: SemanticSearchOptions = {}
+  ): Promise<ResearchFinding[]> {
+    if (this.vectorReady) {
+      const vectorResults = await this.vectorService.semanticSearch(query, options);
+
+      // Get unique finding IDs
+      const findingIds = [...new Set(vectorResults.map((r: VectorSearchResult) => r.findingId))];
+
+      // Fetch full findings from SQLite
+      if (findingIds.length > 0) {
+        const placeholders = findingIds.map(() => '?').join(',');
+        const rows = this.db.prepare(`
+          SELECT * FROM research_findings WHERE id IN (${placeholders})
+        `).all(...findingIds) as Array<Record<string, unknown>>;
+
+        // Sort by vector similarity order
+        const findingsMap = new Map(rows.map(row => [row.id as string, this.rowToFinding(row)]));
+        return findingIds
+          .map((id: string) => findingsMap.get(id))
+          .filter((f): f is ResearchFinding => f !== undefined);
+      }
+    }
+
+    // Fall back to FTS5 search
+    return this.searchFindings(query, options.limit || 10);
+  }
+
+  /**
+   * Find related findings for a given query (for context enrichment)
+   */
+  async findRelatedFindings(
+    query: string,
+    limit: number = 3,
+    excludeFindingId?: string
+  ): Promise<ResearchFinding[]> {
+    if (this.vectorReady) {
+      const vectorResults = await this.vectorService.findRelatedFindings(query, limit, excludeFindingId);
+
+      const findingIds = [...new Set(vectorResults.map((r: VectorSearchResult) => r.findingId))];
+      if (findingIds.length > 0) {
+        const placeholders = findingIds.map(() => '?').join(',');
+        const rows = this.db.prepare(`
+          SELECT * FROM research_findings WHERE id IN (${placeholders})
+        `).all(...findingIds) as Array<Record<string, unknown>>;
+
+        const findingsMap = new Map(rows.map(row => [row.id as string, this.rowToFinding(row)]));
+        return findingIds
+          .map((id: string) => findingsMap.get(id))
+          .filter((f): f is ResearchFinding => f !== undefined);
+      }
+    }
+
+    // Fall back to FTS5 and filter
+    const results = this.searchFindings(query, limit + 1);
+    return results
+      .filter(f => f.id !== excludeFindingId)
+      .slice(0, limit);
+  }
+
+  /**
+   * Add finding to vector database (call after saveFinding)
+   */
+  async embedFinding(finding: ResearchFinding): Promise<void> {
+    if (this.vectorReady) {
+      await this.vectorService.addFinding(finding);
+    }
+  }
+
+  /**
+   * Get vector database stats
+   */
+  async getVectorStats(): Promise<{ count: number; collectionName: string } | null> {
+    if (this.vectorReady) {
+      return this.vectorService.getStats();
+    }
+    return null;
   }
 
   /**
@@ -939,11 +1083,12 @@ export class ResearchDatabase {
     query: string;
     summary: string;
     confidence: number;
+    depth: string;
     triggerReason?: string;
     projectPath?: string;
   }> {
     let query = `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason, il.project_path,
-                        rf.query, rf.summary, rf.confidence
+                        rf.query, rf.summary, rf.confidence, rf.depth
                  FROM injection_log il
                  JOIN research_findings rf ON il.finding_id = rf.id
                  WHERE 1=1`;
@@ -971,6 +1116,7 @@ export class ResearchDatabase {
       query: row.query as string,
       summary: row.summary as string,
       confidence: row.confidence as number,
+      depth: (row.depth as string) || 'medium',
       triggerReason: row.trigger_reason as string | undefined,
       projectPath: row.project_path as string | undefined,
     }));
