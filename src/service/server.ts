@@ -213,6 +213,12 @@ Respond with JSON only: { "relevance": 0.0-1.0, "reason": "brief explanation" }`
     this.watcher.on('research:triggered', async (sessionId: string, decision: WatcherDecision) => {
       if (!decision.query) return;
 
+      // Strip years from queries - search engines handle recency automatically
+      decision.query = decision.query
+        .replace(/\b20(2[0-9]|1[0-9])\b/g, '') // Remove years 2010-2029
+        .replace(/\s{2,}/g, ' ')  // Collapse multiple spaces
+        .trim();
+
       // Deduplicate: Check if similar query is already in-flight for this session
       const sessionInFlight = this.inFlightResearch.get(sessionId) || new Set();
       const queryKey = decision.query.toLowerCase().trim();
@@ -412,8 +418,14 @@ Respond with JSON only: { "relevance": 0.0-1.0, "reason": "brief explanation" }`
           return;
         }
 
+        // Strip years from queries - search engines handle recency automatically
+        const cleanQuery = query
+          .replace(/\b20(2[0-9]|1[0-9])\b/g, '') // Remove years 2010-2029
+          .replace(/\s{2,}/g, ' ')  // Collapse multiple spaces
+          .trim();
+
         const task = await this.queue.queue({
-          query,
+          query: cleanQuery,
           context,
           depth: depth as ResearchDepth || 'medium',
           trigger: trigger || 'manual', // 'user' from dashboard, 'manual' from Claude

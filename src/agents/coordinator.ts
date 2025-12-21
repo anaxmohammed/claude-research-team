@@ -299,7 +299,11 @@ export class CoordinatorAgent {
     parts.push('You are a research coordinator planning how to investigate a query.');
     parts.push('');
     parts.push(`**Current Date: ${dateStr}**`);
-    parts.push('Prioritize recent information. Do NOT append years to search queries - the search engines handle recency automatically.');
+    parts.push('');
+    parts.push('**CRITICAL: NEVER add years (2024, 2025, etc) to search queries.**');
+    parts.push('BAD: "react native best practices 2024"');
+    parts.push('GOOD: "react native best practices"');
+    parts.push('Search engines handle recency automatically. Adding years pollutes results.');
     parts.push('');
     parts.push(`## Research Query`);
     parts.push(`"${directive.query}"`);
