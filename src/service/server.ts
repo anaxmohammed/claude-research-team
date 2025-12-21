@@ -120,6 +120,66 @@ export class ResearchService {
   }
 
   /**
+   * Compute relevance of research results to the current task
+   * This is a POST-research check to ensure we only inject useful info
+   */
+  private async computeRelevance(
+    sessionId: string,
+    query: string,
+    summary: string
+  ): Promise<number> {
+    try {
+      const { getSessionTracker } = await import('../context/session-tracker.js');
+      const { getAIProvider } = await import('../ai/provider.js');
+
+      const tracker = getSessionTracker();
+      const ai = getAIProvider();
+
+      const sessionSummary = tracker.getSessionSummary(sessionId);
+
+      const prompt = `Evaluate how relevant this research result is to the current task.
+
+## Current Task Context
+${sessionSummary}
+
+## Research Query
+${query}
+
+## Research Result Summary
+${summary.slice(0, 1500)}
+
+## Evaluation
+Rate the relevance from 0.0 to 1.0:
+- 1.0 = Directly answers the current question/problem
+- 0.8 = Very helpful for the current task
+- 0.6 = Somewhat relevant, might be useful
+- 0.4 = Tangentially related
+- 0.2 = Barely relevant
+- 0.0 = Not relevant at all
+
+Consider:
+1. Does this help with what Claude is CURRENTLY trying to do?
+2. Is this information Claude likely already knows?
+3. Would injecting this be valuable or just noise?
+
+Respond with JSON only: { "relevance": 0.0-1.0, "reason": "brief explanation" }`;
+
+      const response = await ai.analyze(prompt);
+      const jsonMatch = response.match(/\{[\s\S]*?\}/);
+
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return Math.min(1, Math.max(0, parsed.relevance || 0.5));
+      }
+    } catch (error) {
+      this.logger.debug('Relevance computation failed, using default', { error });
+    }
+
+    // Default to moderate relevance if AI analysis fails
+    return 0.5;
+  }
+
+  /**
    * Setup queue event forwarding to WebSocket
    */
   private setupQueueEvents(): void {
@@ -133,22 +193,8 @@ export class ResearchService {
 
     this.queue.on('taskCompleted', (task: ResearchTask) => {
       this.broadcast('taskCompleted', task);
-
-      // Queue injection for conversation context if we have a session
-      if (task.sessionId && task.result?.summary) {
-        this.sessionManager.queueInjection(task.sessionId, {
-          summary: task.result.summary,
-          query: task.query,
-          relevance: task.result.confidence ?? 0.7,
-          priority: task.priority ?? 5,
-          findingId: task.result.findingId,
-          sources: task.result.sources?.slice(0, 3).map(s => ({ title: s.title, url: s.url })),
-        });
-        this.logger.info(`Queued injection for session ${task.sessionId}`, {
-          query: task.query,
-          findingId: task.result.findingId,
-        });
-      }
+      // NOTE: Injection is handled by setupWatcherEvents with proper relevance checking
+      // Do NOT inject here - it bypasses relevance threshold and causes over-injection
     });
 
     this.queue.on('taskFailed', (task: ResearchTask) => {
@@ -195,6 +241,22 @@ export class ResearchService {
         confidence: decision.confidence,
       });
 
+      // Create task in database to track status (for dashboard Running/Completed)
+      const db = this.queue.getDatabase();
+      const task = db.createTask({
+        id: crypto.randomUUID(),
+        query: decision.query,
+        context: decision.alternativeHint,
+        depth: 'quick',
+        status: 'running',
+        trigger: 'tool_output',  // Watcher-triggered research comes from tool output analysis
+        sessionId,
+        priority: decision.priority,
+      });
+
+      // Broadcast running status to dashboard
+      this.broadcast('taskUpdate', { task, action: 'started' });
+
       try {
         // Use autonomous crew for background research
         // Always use 'quick' for background research - user can request deeper manually
@@ -206,35 +268,103 @@ export class ResearchService {
           depth: 'quick',
         });
 
-        // Queue injection when complete
+        // Queue injection when complete - but only if relevant to current task
         if (result.summary) {
-          this.sessionManager.queueInjection(sessionId, {
-            summary: result.summary,
-            query: decision.query,
-            relevance: result.confidence,
-            priority: decision.priority,
-            pivot: result.pivot,
-            findingId: result.findingId,
-            sources: result.sources?.slice(0, 3).map(s => ({ title: s.title, url: s.url })),
-          });
+          // Compute relevance score - how well does this help the current task?
+          const relevance = await this.computeRelevance(sessionId, decision.query, result.summary);
+          const relevanceThreshold = this.config.getValue('research').relevanceThreshold ?? 0.7;
 
           this.logger.info(`Research complete for ${sessionId}`, {
             query: decision.query,
-            confidence: result.confidence,
+            confidence: result.confidence,  // Source quality
+            relevance: relevance,           // Task relevance
+            meetsThreshold: relevance >= relevanceThreshold,
             hasPivot: !!result.pivot,
             findingId: result.findingId,
           });
 
+          // Only queue injection if relevance meets threshold
+          if (relevance >= relevanceThreshold) {
+            try {
+              this.sessionManager.queueInjection(sessionId, {
+                summary: result.summary,
+                query: decision.query,
+                relevance: relevance,
+                priority: decision.priority,
+                findingId: result.findingId,
+                sources: result.sources?.slice(0, 3).map(s => ({ title: s.title, url: s.url })),
+              });
+            } catch (e) {
+              this.logger.error('Failed at queueInjection', e);
+              throw e;
+            }
+          } else {
+            this.logger.info(`Research not relevant enough to inject`, {
+              query: decision.query,
+              relevance,
+              threshold: relevanceThreshold,
+            });
+          }
+
           // CRITICAL: Record research in session history to prevent duplicates
-          this.sessionManager.recordResearch(
-            sessionId,
-            decision.query,
-            result.findingId || 'unknown',
-            result.confidence
-          );
+          try {
+            this.sessionManager.recordResearch(
+              sessionId,
+              decision.query,
+              result.findingId || 'unknown',
+              result.confidence
+            );
+          } catch (e) {
+            this.logger.error('Failed at recordResearch', e);
+            throw e;
+          }
+
+          // Update task to completed - with detailed error tracking
+          try {
+            db.updateTaskStatus(task.id, 'completed', { completedAt: Date.now() });
+          } catch (e) {
+            this.logger.error('Failed at updateTaskStatus', e);
+            throw e;
+          }
+
+          if (result.summary) {
+            try {
+              db.saveTaskResult(task.id, {
+                summary: result.summary,
+                confidence: result.confidence,
+                relevance: relevance,
+                sources: (result.sources || []).map(s => ({
+                  title: s.title,
+                  url: s.url,
+                  snippet: s.snippet,
+                  relevance: s.relevance ?? 0.5,
+                })),
+                fullContent: result.summary,
+                tokensUsed: 0,
+                findingId: result.findingId,
+              });
+            } catch (e) {
+              this.logger.error('Failed at saveTaskResult', e);
+              throw e;
+            }
+          }
+
+          try {
+            this.broadcast('taskUpdate', { task: { ...task, status: 'completed' }, action: 'completed' });
+          } catch (e) {
+            this.logger.error('Failed at broadcast', e);
+            throw e;
+          }
+        } else {
+          // No result - mark as failed
+          db.updateTaskStatus(task.id, 'failed', { completedAt: Date.now() });
+          this.broadcast('taskUpdate', { task: { ...task, status: 'failed' }, action: 'failed' });
         }
       } catch (error) {
         this.logger.error(`Background research failed for ${sessionId}`, error);
+        // Update task to failed
+        db.updateTaskStatus(task.id, 'failed', { completedAt: Date.now() });
+        this.broadcast('taskUpdate', { task: { ...task, status: 'failed' }, action: 'failed' });
       } finally {
         // Remove from in-flight tracking
         const sessionInFlight = this.inFlightResearch.get(sessionId);
@@ -536,6 +666,65 @@ export class ResearchService {
               injectedAt: Date.now(),
             });
           }
+        } else {
+          // PAST RESEARCH RE-INJECTION: Check if relevant past findings exist
+          // This helps when Claude "forgot" something already researched
+          try {
+            const db = this.queue.getDatabase();
+            const context = this.sessionManager.getWatcherContext(sessionId);
+            if (context) {
+              // Build a search query from recent context
+              const recentText = context.recentMessages
+                .slice(-3)
+                .map(m => m.content)
+                .join(' ')
+                .slice(0, 500);
+
+              if (recentText.length > 50) {
+                // Search for relevant past findings
+                const relevantFindings = db.searchFindings(recentText, 3);
+
+                // Check if any finding is recent enough and relevant
+                const oneHourAgo = Date.now() - 3600000;
+                const recentRelevant = relevantFindings.find(f =>
+                  f.createdAt > oneHourAgo && f.confidence > 0.7
+                );
+
+                if (recentRelevant) {
+                  // Format a shorter "remembered" injection
+                  const keyPoints = recentRelevant.keyPoints?.slice(0, 3) || [];
+                  const summary = keyPoints.length > 0
+                    ? keyPoints.map(p => `- ${p}`).join('\n')
+                    : recentRelevant.summary.slice(0, 300);
+
+                  injection = `<research-context query="${recentRelevant.query}" remembered="true">
+${summary}
+
+_Previously researched - use /research-detail ${recentRelevant.id} for more_
+</research-context>`;
+
+                  this.logger.info('Past research re-injected', {
+                    sessionId,
+                    query: recentRelevant.query,
+                    findingId: recentRelevant.id,
+                  });
+
+                  // Log the re-injection
+                  db.logInjection({
+                    findingId: recentRelevant.id,
+                    sessionId,
+                    injectedAt: Date.now(),
+                    injectionLevel: 1,
+                    triggerReason: 'proactive',
+                    followupInjected: false,
+                    resolvedIssue: false,
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            this.logger.debug('Past research re-injection check failed', e);
+          }
         }
 
         // Also check legacy analyzer for injection (fast, in-memory)
@@ -553,8 +742,11 @@ export class ResearchService {
 
         // RESPOND IMMEDIATELY - Don't block on slow analysis
         // NOTE: We removed checkProactiveTriggers() - dual trigger was causing duplicate research spam
+        const injectionConfig = this.config.getValue('injection');
         res.json(this.successResponse({
           injection,
+          injectionQuery: pendingInjection?.query,  // For visible display
+          showInConversation: injectionConfig?.showInConversation ?? false,
           researchQueued: opportunity.shouldResearch && opportunity.confidence > 0.6,
           queuedQuery: opportunity.query,
           researchType: 'proactive',
@@ -734,14 +926,47 @@ export class ResearchService {
     });
 
     // Get recent autonomous findings (for dashboard visibility)
+    // Supports filtering by project: /api/findings?project=/path/to/project
     this.app.get('/api/findings', async (req, res) => {
       try {
         const limit = parseInt(req.query.limit as string) || 20;
+        const projectPath = req.query.project as string | undefined;
+        const domain = req.query.domain as string | undefined;
         const db = this.queue.getDatabase();
-        const findings = db.getRecentFindings(limit);
+
+        const findings = db.getRecentFindingsFiltered({ limit, projectPath, domain });
         res.json(this.successResponse(findings));
       } catch (error) {
         this.logger.error('Failed to get findings', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
+    // Get all projects with research findings
+    this.app.get('/api/projects', async (_req, res) => {
+      try {
+        const db = this.queue.getDatabase();
+        const projects = db.getProjectsWithResearch();
+        res.json(this.successResponse(projects));
+      } catch (error) {
+        this.logger.error('Failed to get projects', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
+    // Get research stats for a specific project
+    this.app.get('/api/projects/stats', async (req, res) => {
+      try {
+        const projectPath = req.query.path as string;
+        if (!projectPath) {
+          res.status(400).json(this.errorResponse('Project path required'));
+          return;
+        }
+        const db = this.queue.getDatabase();
+        const stats = db.getProjectResearchStats(projectPath);
+        res.json(this.successResponse(stats));
+      } catch (error) {
+        this.logger.error('Failed to get project stats', error);
         res.status(500).json(this.errorResponse(String(error)));
       }
     });
@@ -750,9 +975,10 @@ export class ResearchService {
     this.app.get('/api/injections', async (req, res) => {
       try {
         const limit = parseInt(req.query.limit as string) || 20;
-        const sessionId = req.query.sessionId as string;
+        const sessionId = req.query.sessionId as string | undefined;
+        const projectPath = req.query.project as string | undefined;
         const db = this.queue.getDatabase();
-        const injections = db.getRecentInjections(limit, sessionId);
+        const injections = db.getRecentInjections(limit, { sessionId, projectPath });
         res.json(this.successResponse(injections));
       } catch (error) {
         this.logger.error('Failed to get injections', error);
@@ -806,13 +1032,19 @@ export class ResearchService {
           if (research.confidenceThreshold < 0.5 || research.confidenceThreshold > 0.95) {
             throw new Error('confidenceThreshold must be between 0.5 and 0.95');
           }
+          if (research.relevanceThreshold !== undefined &&
+              (research.relevanceThreshold < 0.5 || research.relevanceThreshold > 0.95)) {
+            throw new Error('relevanceThreshold must be between 0.5 and 0.95');
+          }
           if (![30000, 60000, 120000, 300000].includes(research.sessionCooldownMs)) {
             throw new Error('Invalid sessionCooldownMs value');
           }
           if (research.maxResearchPerHour < 5 || research.maxResearchPerHour > 100) {
             throw new Error('maxResearchPerHour must be between 5 and 100');
           }
-          this.config.setValue('research', research);
+          // Merge with existing config to preserve fields not sent
+          const currentResearch = this.config.getValue('research');
+          this.config.setValue('research', { ...currentResearch, ...research });
         }
 
         // Validate AI provider settings
@@ -1283,6 +1515,21 @@ export class ResearchService {
       border-color: var(--primary);
       color: var(--primary);
     }
+    .task-action-btn.running-placeholder {
+      cursor: not-allowed;
+      opacity: 0.7;
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+    }
+    .btn-spinner {
+      width: 10px;
+      height: 10px;
+      border: 2px solid var(--text-muted);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
 
     /* Task content (expandable) */
     .task-content {
@@ -1407,6 +1654,55 @@ export class ResearchService {
     }
     .confidence-value {
       font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      min-width: 2.5rem;
+    }
+
+    /* Dual score display (Quality + Relevance) */
+    .scores-container {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .score-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .score-bar label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      min-width: 60px;
+    }
+    .score-track {
+      flex: 1;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .score-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+    .score-fill.quality-fill {
+      background: var(--success);
+    }
+    .score-fill.relevance-fill.high {
+      background: #10b981;
+    }
+    .score-fill.relevance-fill.medium {
+      background: #f59e0b;
+    }
+    .score-fill.relevance-fill.low {
+      background: #ef4444;
+    }
+    .score-value {
+      font-size: 0.75rem;
       font-weight: 600;
       color: var(--text);
       min-width: 2.5rem;
@@ -1723,6 +2019,16 @@ export class ResearchService {
             </div>
             <div class="setting-row">
               <div>
+                <div class="setting-label">Relevance Threshold</div>
+                <div class="setting-sublabel">Minimum relevance to inject</div>
+              </div>
+              <div class="setting-input">
+                <input type="range" id="setting-relevance" min="50" max="95" step="5" value="70">
+                <span class="setting-value" id="relevance-value">70%</span>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div>
                 <div class="setting-label">Session Cooldown</div>
                 <div class="setting-sublabel">Min time between researches</div>
               </div>
@@ -1743,6 +2049,16 @@ export class ResearchService {
               <div class="setting-input">
                 <input type="number" id="setting-max-hour" min="5" max="100" value="20">
               </div>
+            </div>
+            <div class="setting-row">
+              <div>
+                <div class="setting-label">Show Injections</div>
+                <div class="setting-sublabel">Display injections in conversation</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="setting-show-injections">
+                <span class="toggle-slider"></span>
+              </label>
             </div>
           </div>
 
@@ -1858,8 +2174,14 @@ export class ResearchService {
         document.getElementById('setting-autonomous').checked = settings.research.autonomousEnabled;
         document.getElementById('setting-confidence').value = settings.research.confidenceThreshold * 100;
         document.getElementById('confidence-value').textContent = Math.round(settings.research.confidenceThreshold * 100) + '%';
+        document.getElementById('setting-relevance').value = (settings.research.relevanceThreshold || 0.7) * 100;
+        document.getElementById('relevance-value').textContent = Math.round((settings.research.relevanceThreshold || 0.7) * 100) + '%';
         document.getElementById('setting-cooldown').value = settings.research.sessionCooldownMs;
         document.getElementById('setting-max-hour').value = settings.research.maxResearchPerHour;
+      }
+      // Injection settings
+      if (settings.injection) {
+        document.getElementById('setting-show-injections').checked = settings.injection.showInConversation || false;
       }
       // AI provider settings
       if (settings.aiProvider) {
@@ -1884,8 +2206,12 @@ export class ResearchService {
         research: {
           autonomousEnabled: document.getElementById('setting-autonomous').checked,
           confidenceThreshold: parseInt(document.getElementById('setting-confidence').value) / 100,
+          relevanceThreshold: parseInt(document.getElementById('setting-relevance').value) / 100,
           sessionCooldownMs: parseInt(document.getElementById('setting-cooldown').value),
           maxResearchPerHour: parseInt(document.getElementById('setting-max-hour').value)
+        },
+        injection: {
+          showInConversation: document.getElementById('setting-show-injections').checked
         },
         aiProvider: {
           provider: document.getElementById('setting-provider').value,
@@ -1948,6 +2274,10 @@ export class ResearchService {
       document.getElementById('confidence-value').textContent = e.target.value + '%';
     });
 
+    document.getElementById('setting-relevance').addEventListener('input', (e) => {
+      document.getElementById('relevance-value').textContent = e.target.value + '%';
+    });
+
     document.getElementById('setting-provider').addEventListener('change', (e) => {
       toggleProviderSettings(e.target.value);
     });
@@ -1959,8 +2289,10 @@ export class ResearchService {
         updateStats(msg.data.queue);
       } else if (msg.type === 'injection') {
         fetchAllData();
+        fetchStats(); // Also refresh queue stats
       } else if (msg.type.startsWith('task')) {
         fetchAllData();
+        fetchStats(); // Also refresh queue stats (completed count, etc.)
       }
     };
 
@@ -2086,17 +2418,39 @@ export class ResearchService {
           \`;
 
           const confidence = item.confidence ?? item.result?.confidence;
-          if (confidence !== undefined) {
-            const pct = Math.round(confidence * 100);
-            contentHtml += \`
-              <div class="confidence-bar">
-                <label>Confidence</label>
-                <div class="confidence-track">
-                  <div class="confidence-fill" style="width: \${pct}%"></div>
+          const relevance = item.relevance ?? item.result?.relevance;
+
+          if (confidence !== undefined || relevance !== undefined) {
+            contentHtml += \`<div class="scores-container">\`;
+
+            if (confidence !== undefined) {
+              const confPct = Math.round(confidence * 100);
+              contentHtml += \`
+                <div class="score-bar">
+                  <label>Quality</label>
+                  <div class="score-track">
+                    <div class="score-fill quality-fill" style="width: \${confPct}%"></div>
+                  </div>
+                  <span class="score-value">\${confPct}%</span>
                 </div>
-                <span class="confidence-value">\${pct}%</span>
-              </div>
-            \`;
+              \`;
+            }
+
+            if (relevance !== undefined) {
+              const relPct = Math.round(relevance * 100);
+              const relClass = relevance >= 0.7 ? 'high' : relevance >= 0.4 ? 'medium' : 'low';
+              contentHtml += \`
+                <div class="score-bar">
+                  <label>Relevance</label>
+                  <div class="score-track">
+                    <div class="score-fill relevance-fill \${relClass}" style="width: \${relPct}%"></div>
+                  </div>
+                  <span class="score-value">\${relPct}%</span>
+                </div>
+              \`;
+            }
+
+            contentHtml += \`</div>\`;
           }
         }
 
@@ -2145,6 +2499,10 @@ export class ResearchService {
                   <button class="task-action-btn \${isExpanded ? 'active' : ''}" onclick="toggleItem('\${item.id}')">
                     \${isExpanded ? 'Hide' : 'View'} Details
                   </button>
+                \` : (item.status === 'running' || item.status === 'queued') ? \`
+                  <button class="task-action-btn running-placeholder" disabled>
+                    <span class="btn-spinner"></span> Running...
+                  </button>
                 \` : ''}
               </div>
             </div>
@@ -2168,12 +2526,17 @@ export class ResearchService {
         ]);
 
         const items = [];
+        const taskFindingIds = new Set(); // Track findingIds from tasks to avoid duplicates
+        const taskQueries = new Set(); // Track queries from tasks for fallback deduplication
 
         // Add queued/manual tasks (distinguish 'user' from 'manual')
         if (tasksJson.success) {
           for (const t of tasksJson.data) {
-            // Use trigger type for itemType: 'user' for dashboard, 'manual' for Claude
-            const itemType = t.trigger === 'user' ? 'user' : 'manual';
+            // Use trigger type for itemType: 'user' for dashboard, 'manual' for Claude, 'autonomous' for watcher
+            let itemType = 'manual';
+            if (t.trigger === 'user') itemType = 'user';
+            else if (t.trigger === 'tool_output' || t.trigger === 'auto') itemType = 'autonomous';
+
             items.push({
               id: 'task-' + t.id,
               itemType,
@@ -2182,17 +2545,29 @@ export class ResearchService {
               summary: t.result?.summary,
               sources: t.result?.sources,
               confidence: t.result?.confidence,
+              relevance: t.result?.relevance,
               depth: t.depth,
               status: t.status,
               result: t.result,
               timestamp: t.createdAt
             });
+
+            // Track findingId to avoid showing duplicate finding
+            if (t.result?.findingId) {
+              taskFindingIds.add(t.result.findingId);
+            }
+            // Also track query for fallback deduplication (normalize)
+            taskQueries.add(t.query.toLowerCase().trim());
           }
         }
 
-        // Add autonomous findings
+        // Add autonomous findings (only if not already shown as a task)
         if (findingsJson.success) {
           for (const f of findingsJson.data) {
+            // Skip if this finding is already represented by a task (by findingId or query)
+            if (taskFindingIds.has(f.id)) continue;
+            if (taskQueries.has(f.query.toLowerCase().trim())) continue;
+
             items.push({
               id: 'finding-' + f.id,
               itemType: 'autonomous',

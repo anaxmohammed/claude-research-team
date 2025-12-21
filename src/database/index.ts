@@ -42,9 +42,62 @@ export class ResearchDatabase {
     }
   }
 
+  /**
+   * Run database migrations for existing databases
+   * Safe to run multiple times - checks if columns exist
+   */
+  private runMigrations(): void {
+    // Migration: Add project_path to research_findings
+    try {
+      const columns = this.db.pragma('table_info(research_findings)') as Array<{ name: string }>;
+      const hasProjectPath = columns.some(col => col.name === 'project_path');
+      if (!hasProjectPath) {
+        this.db.exec('ALTER TABLE research_findings ADD COLUMN project_path TEXT');
+      }
+    } catch {
+      // Table doesn't exist yet - will be created in initialize()
+    }
+
+    // Migration: Add project_path to injection_log
+    try {
+      const columns = this.db.pragma('table_info(injection_log)') as Array<{ name: string }>;
+      const hasProjectPath = columns.some(col => col.name === 'project_path');
+      if (!hasProjectPath) {
+        this.db.exec('ALTER TABLE injection_log ADD COLUMN project_path TEXT');
+      }
+    } catch {
+      // Table doesn't exist yet - will be created in initialize()
+    }
+
+    // Migration: Add result_finding_id to research_tasks (for deduplication)
+    try {
+      const columns = this.db.pragma('table_info(research_tasks)') as Array<{ name: string }>;
+      const hasFindingId = columns.some(col => col.name === 'result_finding_id');
+      if (!hasFindingId) {
+        this.db.exec('ALTER TABLE research_tasks ADD COLUMN result_finding_id TEXT');
+      }
+    } catch {
+      // Table doesn't exist yet - will be created in initialize()
+    }
+
+    // Migration: Add result_relevance to research_tasks (for injection decisions)
+    try {
+      const columns = this.db.pragma('table_info(research_tasks)') as Array<{ name: string }>;
+      const hasRelevance = columns.some(col => col.name === 'result_relevance');
+      if (!hasRelevance) {
+        this.db.exec('ALTER TABLE research_tasks ADD COLUMN result_relevance REAL');
+      }
+    } catch {
+      // Table doesn't exist yet - will be created in initialize()
+    }
+  }
+
   private initialize(): void {
     // Enable WAL mode for better concurrency
     this.db.pragma('journal_mode = WAL');
+
+    // Run migrations first (for existing databases)
+    this.runMigrations();
 
     // Create tables
     this.db.exec(`
@@ -65,6 +118,8 @@ export class ResearchDatabase {
         result_full TEXT,
         result_tokens INTEGER,
         result_confidence REAL,
+        result_relevance REAL,
+        result_finding_id TEXT,
         error TEXT
       );
 
@@ -152,10 +207,12 @@ export class ResearchDatabase {
         depth TEXT NOT NULL,
         confidence REAL DEFAULT 0.5,
         created_at INTEGER NOT NULL,
-        last_accessed_at INTEGER
+        last_accessed_at INTEGER,
+        project_path TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_findings_domain ON research_findings(domain);
       CREATE INDEX IF NOT EXISTS idx_findings_created ON research_findings(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_findings_project ON research_findings(project_path);
 
       -- FTS5 for research findings
       CREATE VIRTUAL TABLE IF NOT EXISTS research_findings_fts USING fts5(
@@ -196,10 +253,12 @@ export class ResearchDatabase {
         followup_injected INTEGER DEFAULT 0,
         effectiveness_score REAL,
         resolved_issue INTEGER DEFAULT 0,
+        project_path TEXT,
         FOREIGN KEY(finding_id) REFERENCES research_findings(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_injection_log_session ON injection_log(session_id);
       CREATE INDEX IF NOT EXISTS idx_injection_log_finding ON injection_log(finding_id);
+      CREATE INDEX IF NOT EXISTS idx_injection_log_project ON injection_log(project_path);
 
       -- Domain-level source quality tracking
       CREATE TABLE IF NOT EXISTS source_quality (
@@ -303,32 +362,60 @@ export class ResearchDatabase {
   }
 
   saveTaskResult(id: string, result: ResearchResult): void {
-    this.db.prepare(`
-      UPDATE research_tasks SET
-        result_summary = ?,
-        result_full = ?,
-        result_tokens = ?,
-        result_confidence = ?,
-        status = 'completed',
-        completed_at = ?
-      WHERE id = ?
-    `).run(
-      result.summary,
-      result.fullContent,
-      result.tokensUsed,
-      result.confidence,
-      Date.now(),
-      id
-    );
+    // Debug: Log what we're trying to save
+    console.log('[DB] saveTaskResult called with:', {
+      id,
+      summaryLen: result.summary?.length,
+      fullContentLen: result.fullContent?.length,
+      tokensUsed: result.tokensUsed,
+      confidence: result.confidence,
+      relevance: result.relevance,
+      findingId: result.findingId,
+      sourcesCount: result.sources?.length,
+    });
+
+    try {
+      this.db.prepare(`
+        UPDATE research_tasks SET
+          result_summary = ?,
+          result_full = ?,
+          result_tokens = ?,
+          result_confidence = ?,
+          result_relevance = ?,
+          result_finding_id = ?,
+          status = 'completed',
+          completed_at = ?
+        WHERE id = ?
+      `).run(
+        result.summary,
+        result.fullContent,
+        result.tokensUsed,
+        result.confidence,
+        result.relevance ?? 0.5,
+        result.findingId || null,
+        Date.now(),
+        id
+      );
+      console.log('[DB] Task result saved successfully');
+    } catch (e) {
+      console.error('[DB] Failed to save task result:', e);
+      throw e;
+    }
 
     // Save sources
-    const insertSource = this.db.prepare(`
-      INSERT INTO research_sources (task_id, title, url, snippet, relevance)
-      VALUES (?, ?, ?, ?, ?)
-    `);
+    try {
+      const insertSource = this.db.prepare(`
+        INSERT INTO research_sources (task_id, title, url, snippet, relevance)
+        VALUES (?, ?, ?, ?, ?)
+      `);
 
-    for (const source of result.sources) {
-      insertSource.run(id, source.title, source.url, source.snippet || null, source.relevance);
+      for (const source of result.sources || []) {
+        insertSource.run(id, source.title, source.url, source.snippet || null, source.relevance);
+      }
+      console.log('[DB] Sources saved successfully:', result.sources?.length || 0);
+    } catch (e) {
+      console.error('[DB] Failed to save sources:', e);
+      throw e;
     }
   }
 
@@ -433,7 +520,9 @@ export class ResearchDatabase {
         fullContent: row.result_full as string,
         tokensUsed: row.result_tokens as number,
         confidence: row.result_confidence as number,
+        relevance: (row.result_relevance as number) ?? 0.5,  // Default if not stored
         sources: this.getTaskSources(task.id),
+        findingId: row.result_finding_id as string | undefined,
       };
     }
 
@@ -542,18 +631,19 @@ export class ResearchDatabase {
   // Research Findings (Progressive Disclosure)
   // ============================================================================
 
-  saveFinding(finding: ResearchFinding): void {
+  saveFinding(finding: ResearchFinding, projectPath?: string): void {
     this.db.prepare(`
       INSERT INTO research_findings (
-        id, query, summary, key_points, full_content, sources, domain, depth, confidence, created_at, last_accessed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, query, summary, key_points, full_content, sources, domain, depth, confidence, created_at, last_accessed_at, project_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         summary = excluded.summary,
         key_points = excluded.key_points,
         full_content = excluded.full_content,
         sources = excluded.sources,
         confidence = excluded.confidence,
-        last_accessed_at = excluded.last_accessed_at
+        last_accessed_at = excluded.last_accessed_at,
+        project_path = COALESCE(excluded.project_path, project_path)
     `).run(
       finding.id,
       finding.query,
@@ -565,7 +655,8 @@ export class ResearchDatabase {
       finding.depth,
       finding.confidence,
       finding.createdAt,
-      Date.now()
+      Date.now(),
+      projectPath || finding.projectPath || null
     );
   }
 
@@ -625,7 +716,174 @@ export class ResearchDatabase {
       confidence: row.confidence as number,
       createdAt: row.created_at as number,
       lastAccessedAt: row.last_accessed_at as number | undefined,
+      projectPath: row.project_path as string | undefined,
     };
+  }
+
+  // ============================================================================
+  // Project-Specific Research Queries
+  // ============================================================================
+
+  /**
+   * Get research findings for a specific project
+   */
+  getProjectFindings(projectPath: string, limit: number = 50): ResearchFinding[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM research_findings
+      WHERE project_path = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(projectPath, limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => this.rowToFinding(row));
+  }
+
+  /**
+   * Check if a similar query was recently researched (for deduplication)
+   * Uses word overlap to detect similar queries
+   */
+  hasRecentSimilarQuery(query: string, maxAgeMs: number = 3600000): { found: boolean; existingQuery?: string } {
+    const cutoffTime = Date.now() - maxAgeMs;
+
+    // Get recent findings
+    const recentFindings = this.db.prepare(`
+      SELECT query FROM research_findings
+      WHERE created_at > ?
+      ORDER BY created_at DESC
+      LIMIT 50
+    `).all(cutoffTime) as Array<{ query: string }>;
+
+    // Also check recent tasks (queued or running)
+    const recentTasks = this.db.prepare(`
+      SELECT query FROM research_tasks
+      WHERE created_at > ?
+      ORDER BY created_at DESC
+      LIMIT 50
+    `).all(cutoffTime) as Array<{ query: string }>;
+
+    const allQueries = [...recentFindings, ...recentTasks].map(r => r.query);
+
+    // Normalize query for comparison
+    const queryWords = new Set(
+      query.toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 3)
+    );
+
+    for (const existingQuery of allQueries) {
+      const existingWords = new Set(
+        existingQuery.toLowerCase()
+          .replace(/[^\w\s]/g, ' ')
+          .split(/\s+/)
+          .filter(w => w.length > 3)
+      );
+
+      // Calculate Jaccard similarity
+      const intersection = new Set([...queryWords].filter(w => existingWords.has(w)));
+      const union = new Set([...queryWords, ...existingWords]);
+      const similarity = union.size > 0 ? intersection.size / union.size : 0;
+
+      // If >50% word overlap, consider it similar
+      if (similarity > 0.5) {
+        return { found: true, existingQuery };
+      }
+    }
+
+    return { found: false };
+  }
+
+  /**
+   * Get research statistics for a specific project
+   */
+  getProjectResearchStats(projectPath: string): {
+    totalFindings: number;
+    topDomains: string[];
+    recentQueries: string[];
+    avgConfidence: number;
+  } {
+    const stats = this.db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        AVG(confidence) as avg_confidence
+      FROM research_findings
+      WHERE project_path = ?
+    `).get(projectPath) as { total: number; avg_confidence: number };
+
+    const domains = this.db.prepare(`
+      SELECT domain, COUNT(*) as count
+      FROM research_findings
+      WHERE project_path = ? AND domain IS NOT NULL
+      GROUP BY domain
+      ORDER BY count DESC
+      LIMIT 5
+    `).all(projectPath) as Array<{ domain: string; count: number }>;
+
+    const queries = this.db.prepare(`
+      SELECT query FROM research_findings
+      WHERE project_path = ?
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all(projectPath) as Array<{ query: string }>;
+
+    return {
+      totalFindings: stats.total || 0,
+      topDomains: domains.map(d => d.domain),
+      recentQueries: queries.map(q => q.query),
+      avgConfidence: stats.avg_confidence || 0,
+    };
+  }
+
+  /**
+   * Get all projects with research findings
+   */
+  getProjectsWithResearch(): Array<{ projectPath: string; findingCount: number; lastResearchAt: number }> {
+    const rows = this.db.prepare(`
+      SELECT
+        project_path,
+        COUNT(*) as finding_count,
+        MAX(created_at) as last_research_at
+      FROM research_findings
+      WHERE project_path IS NOT NULL
+      GROUP BY project_path
+      ORDER BY last_research_at DESC
+    `).all() as Array<{ project_path: string; finding_count: number; last_research_at: number }>;
+
+    return rows.map(row => ({
+      projectPath: row.project_path,
+      findingCount: row.finding_count,
+      lastResearchAt: row.last_research_at,
+    }));
+  }
+
+  /**
+   * Get recent findings with optional project filter
+   */
+  getRecentFindingsFiltered(options: {
+    limit?: number;
+    projectPath?: string;
+    domain?: string;
+  } = {}): ResearchFinding[] {
+    const { limit = 20, projectPath, domain } = options;
+
+    let query = 'SELECT * FROM research_findings WHERE 1=1';
+    const params: unknown[] = [];
+
+    if (projectPath) {
+      query += ' AND project_path = ?';
+      params.push(projectPath);
+    }
+
+    if (domain) {
+      query += ' AND domain = ?';
+      params.push(domain);
+    }
+
+    query += ' ORDER BY created_at DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = this.db.prepare(query).all(...params) as Array<Record<string, unknown>>;
+    return rows.map((row) => this.rowToFinding(row));
   }
 
   // ============================================================================
@@ -635,8 +893,8 @@ export class ResearchDatabase {
   logInjection(log: InjectionLogEntry): number {
     const result = this.db.prepare(`
       INSERT INTO injection_log (
-        finding_id, session_id, injected_at, injection_level, trigger_reason, followup_injected, effectiveness_score, resolved_issue
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        finding_id, session_id, injected_at, injection_level, trigger_reason, followup_injected, effectiveness_score, resolved_issue, project_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       log.findingId,
       log.sessionId,
@@ -645,7 +903,8 @@ export class ResearchDatabase {
       log.triggerReason || null,
       log.followupInjected ? 1 : 0,
       log.effectivenessScore ?? null,
-      log.resolvedIssue ? 1 : 0
+      log.resolvedIssue ? 1 : 0,
+      log.projectPath || null
     );
 
     return result.lastInsertRowid as number;
@@ -666,13 +925,14 @@ export class ResearchDatabase {
       followupInjected: (row.followup_injected as number) === 1,
       effectivenessScore: row.effectiveness_score as number | undefined,
       resolvedIssue: (row.resolved_issue as number) === 1,
+      projectPath: row.project_path as string | undefined,
     }));
   }
 
   /**
    * Get recent injections with finding details for dashboard visibility
    */
-  getRecentInjections(limit: number = 20, sessionId?: string): Array<{
+  getRecentInjections(limit: number = 20, options?: { sessionId?: string; projectPath?: string }): Array<{
     id: number;
     sessionId: string;
     injectedAt: number;
@@ -680,23 +940,29 @@ export class ResearchDatabase {
     summary: string;
     confidence: number;
     triggerReason?: string;
+    projectPath?: string;
   }> {
-    const query = sessionId
-      ? `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason,
-                rf.query, rf.summary, rf.confidence
-         FROM injection_log il
-         JOIN research_findings rf ON il.finding_id = rf.id
-         WHERE il.session_id = ?
-         ORDER BY il.injected_at DESC LIMIT ?`
-      : `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason,
-                rf.query, rf.summary, rf.confidence
-         FROM injection_log il
-         JOIN research_findings rf ON il.finding_id = rf.id
-         ORDER BY il.injected_at DESC LIMIT ?`;
+    let query = `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason, il.project_path,
+                        rf.query, rf.summary, rf.confidence
+                 FROM injection_log il
+                 JOIN research_findings rf ON il.finding_id = rf.id
+                 WHERE 1=1`;
+    const params: unknown[] = [];
 
-    const rows = sessionId
-      ? this.db.prepare(query).all(sessionId, limit) as Array<Record<string, unknown>>
-      : this.db.prepare(query).all(limit) as Array<Record<string, unknown>>;
+    if (options?.sessionId) {
+      query += ' AND il.session_id = ?';
+      params.push(options.sessionId);
+    }
+
+    if (options?.projectPath) {
+      query += ' AND il.project_path = ?';
+      params.push(options.projectPath);
+    }
+
+    query += ' ORDER BY il.injected_at DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = this.db.prepare(query).all(...params) as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
       id: row.id as number,
@@ -706,6 +972,7 @@ export class ResearchDatabase {
       summary: row.summary as string,
       confidence: row.confidence as number,
       triggerReason: row.trigger_reason as string | undefined,
+      projectPath: row.project_path as string | undefined,
     }));
   }
 
@@ -741,6 +1008,7 @@ export class ResearchDatabase {
       followupInjected: (row.followup_injected as number) === 1,
       effectivenessScore: row.effectiveness_score as number | undefined,
       resolvedIssue: (row.resolved_issue as number) === 1,
+      projectPath: row.project_path as string | undefined,
     };
   }
 

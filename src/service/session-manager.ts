@@ -406,6 +406,7 @@ export class SessionManager extends EventEmitter {
     recentErrors: string[];
     researchHistory: string[];
     recentMessages: ConversationEntry[];
+    projectPath?: string;
   } | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
@@ -418,6 +419,7 @@ export class SessionManager extends EventEmitter {
         .slice(-10)
         .map(r => r.query),
       recentMessages: session.messages.slice(-maxMessages),
+      projectPath: session.projectPath,
     };
   }
 

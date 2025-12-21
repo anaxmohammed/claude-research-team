@@ -41,6 +41,14 @@ A background research service that watches your Claude Code sessions, detects wh
   <em>Research findings with sources and expandable details</em>
 </p>
 
+<p align="center">
+  <img src="assets/dashboard-settings.png" alt="Settings Panel" width="700">
+</p>
+
+<p align="center">
+  <em>Configure AI provider, research triggers, and rate limits</em>
+</p>
+
 ---
 
 ## Quick Start

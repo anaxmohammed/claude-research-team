@@ -56,6 +56,11 @@
       "type": "boolean",
       "default": false,
       "description": "Sync research findings to claude-mem"
+    },
+    "showInjectionsInConversation": {
+      "type": "boolean",
+      "default": false,
+      "description": "Show research injections visibly in conversation"
     }
   },
   "dependencies": {

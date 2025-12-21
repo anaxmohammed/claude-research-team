@@ -13,6 +13,7 @@ import {
   createHookRunner,
   createContinueResponse,
   createInjectionResponse,
+  createVisibleInjectionResponse,
   type HookResponse,
 } from './cli-handler.js';
 
@@ -30,6 +31,8 @@ interface ConversationStreamResponse {
   success: boolean;
   data?: {
     injection?: string;
+    injectionQuery?: string;  // The original query for visible display
+    showInConversation?: boolean;  // Whether to show injection visibly
     researchQueued?: boolean;
     queuedQuery?: string;
   };
@@ -68,7 +71,14 @@ async function handlePostToolUse(input: PostToolUseHookInput): Promise<HookRespo
 
       // If the service has context to inject, return it
       if (data.success && data.data?.injection) {
-        return createInjectionResponse('PostToolUse', data.data.injection);
+        // Check if we should show the injection visibly
+        if (data.data.showInConversation) {
+          // Create a condensed visible message
+          const visibleMessage = `\n📚 [Research injected: "${data.data.injectionQuery || 'context'}"]\n`;
+          return createVisibleInjectionResponse('PostToolUse', data.data.injection, visibleMessage);
+        } else {
+          return createInjectionResponse('PostToolUse', data.data.injection);
+        }
       }
     }
   } catch {

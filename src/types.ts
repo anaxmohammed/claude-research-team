@@ -31,6 +31,7 @@ export interface ResearchTask {
   status: ResearchStatus;
   trigger: TriggerSource;
   sessionId?: string;
+  projectPath?: string;    // Project this research is for
   priority: number;        // 1-10, higher = more urgent
   createdAt: number;       // Unix timestamp
   startedAt?: number;
@@ -44,7 +45,8 @@ export interface ResearchResult {
   fullContent: string;     // Full research content
   sources: ResearchSource[];
   tokensUsed: number;      // Approximate tokens in summary
-  confidence: number;      // 0-1 confidence score
+  confidence: number;      // 0-1 source quality score (internal metric)
+  relevance: number;       // 0-1 relevance to actual task (injection decision)
   findingId?: string;      // ID for progressive disclosure lookup
   pivot?: PivotSuggestion; // Alternative approach detected
 }
@@ -113,6 +115,7 @@ export interface ResearchFinding {
   confidence: number;      // 0-1 confidence score
   createdAt: number;       // Unix timestamp
   lastAccessedAt?: number;
+  projectPath?: string;    // Project this research is associated with
 }
 
 /**
@@ -136,6 +139,7 @@ export interface InjectionLogEntry {
   followupInjected: boolean;  // Did we need to inject more?
   effectivenessScore?: number; // -1 to 1, from implicit feedback
   resolvedIssue: boolean;     // Did this help resolve the issue?
+  projectPath?: string;       // Project this injection was for
 }
 
 /**
@@ -167,6 +171,7 @@ export interface InjectionBudget {
   maxTokensPerInjection: number;
   maxTotalTokensPerSession: number;
   cooldownMs: number;      // Min time between injections
+  showInConversation: boolean;  // Show injections visibly in conversation
 }
 
 // ============================================================================
@@ -202,6 +207,98 @@ export interface Session {
 }
 
 // ============================================================================
+// Project Context Types (Codebase Understanding)
+// ============================================================================
+
+export interface ProjectContext {
+  id: string;
+  projectPath: string;
+  name: string;                    // Project name (from package.json, Cargo.toml, etc.)
+  summary: string;                 // AI-generated project summary
+  stack: string[];                 // Tech stack (e.g., ['typescript', 'react', 'node'])
+  keyFiles: ProjectFile[];         // Important files identified
+  patterns: string[];              // Code patterns/conventions detected
+  dependencies: string[];          // Key dependencies
+  indexedAt: number;               // When last indexed
+  lastUpdatedAt: number;           // When project files last changed
+  tokenCount: number;              // Approximate tokens in context
+}
+
+export interface ProjectFile {
+  path: string;
+  type: 'config' | 'source' | 'readme' | 'test' | 'types';
+  summary?: string;                // AI summary of file purpose
+  importance: number;              // 0-1 importance score
+}
+
+// ============================================================================
+// Session Goal Tracking Types
+// ============================================================================
+
+export interface SessionGoal {
+  id: string;
+  sessionId: string;
+  description: string;             // What Claude is trying to accomplish
+  status: 'active' | 'completed' | 'blocked' | 'abandoned';
+  createdAt: number;
+  updatedAt: number;
+  blockers?: string[];             // Current blockers/issues
+  subTasks?: SessionSubTask[];     // Breakdown of goal into tasks
+}
+
+export interface SessionSubTask {
+  description: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  startedAt?: number;
+  completedAt?: number;
+}
+
+export interface SessionContext {
+  sessionId: string;
+  projectContext?: ProjectContext; // Cached project understanding
+  currentGoal?: SessionGoal;       // What Claude is working on now
+  recentActions: SessionAction[];  // Recent tool calls and decisions
+  knowledgeGaps: string[];         // Identified areas where research might help
+  lastAnalyzedAt: number;          // When context was last analyzed
+}
+
+export interface SessionAction {
+  type: 'tool_call' | 'decision' | 'error' | 'user_request';
+  description: string;
+  timestamp: number;
+  toolName?: string;
+  errorMessage?: string;
+}
+
+// ============================================================================
+// Research Decision Types (Smart Query Generation)
+// ============================================================================
+
+export interface ResearchDecision {
+  shouldResearch: boolean;
+  query?: string;                  // Generated query if shouldResearch=true
+  reason: string;                  // Why research was/wasn't triggered
+  knowledgeGap?: string;           // What Claude might be missing
+  expectedRelevance: number;       // 0-1 expected relevance to task
+  depth: ResearchDepth;
+  priority: number;
+  alternativeHint?: string;        // Hint for pivot detection
+}
+
+export interface ResearchAnalysis {
+  taskContext: string;             // Summary of what Claude is doing
+  identifiedGaps: string[];        // Knowledge gaps identified
+  suggestedQueries: SuggestedQuery[];
+}
+
+export interface SuggestedQuery {
+  query: string;
+  reason: string;                  // Why this would help
+  expectedRelevance: number;       // 0-1 expected relevance
+  priority: number;                // 1-10
+}
+
+// ============================================================================
 // Configuration Types
 // ============================================================================
 
@@ -211,9 +308,11 @@ export type GeminiModel = 'gemini-2.0-flash-exp' | 'gemini-1.5-flash' | 'gemini-
 
 export interface ResearchSettings {
   autonomousEnabled: boolean;      // Enable/disable autonomous research
-  confidenceThreshold: number;     // 0.5-0.95, minimum confidence to trigger
+  confidenceThreshold: number;     // 0.5-0.95, minimum source quality to accept
+  relevanceThreshold: number;      // 0.5-0.95, minimum relevance to inject
   sessionCooldownMs: number;       // Cooldown between researches per session
   maxResearchPerHour: number;      // Global hourly limit
+  projectIndexingEnabled: boolean; // Enable automatic project indexing
 }
 
 export interface AIProviderConfig {
@@ -258,12 +357,14 @@ export const DEFAULT_CONFIG: Config = {
   defaultDepth: 'medium',
   engines: ['serper', 'brave', 'tavily'],
 
-  // Autonomous research settings (conservative defaults)
+  // Autonomous research settings (balanced with database deduplication)
   research: {
     autonomousEnabled: true,
-    confidenceThreshold: 0.85,     // High bar - only research when confident
+    confidenceThreshold: 0.85,     // Balanced - database dedup handles repeats
+    relevanceThreshold: 0.8,       // Must be relevant to inject
     sessionCooldownMs: 60000,      // 1 minute between researches per session
-    maxResearchPerHour: 20,        // Global limit to prevent runaway costs
+    maxResearchPerHour: 15,        // Reasonable limit with deduplication
+    projectIndexingEnabled: true,  // Index projects for context
   },
 
   // AI provider (Claude SDK by default, Gemini optional)
@@ -278,6 +379,7 @@ export const DEFAULT_CONFIG: Config = {
     maxTokensPerInjection: 150,
     maxTotalTokensPerSession: 500,
     cooldownMs: 30000,      // 30 seconds between injections
+    showInConversation: false,  // Hidden by default (for power users)
   },
 
   queue: {

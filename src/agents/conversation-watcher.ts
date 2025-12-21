@@ -16,6 +16,8 @@ import { EventEmitter } from 'events';
 import { Logger } from '../utils/logger.js';
 import { queryAI } from '../ai/provider.js';
 import { getSessionManager, type ConversationEntry } from '../service/session-manager.js';
+import { getProjectContextService, type QuickProjectContext } from '../context/project-context.js';
+import { getDatabase } from '../database/index.js';
 import type { Config, ResearchSettings } from '../types.js';
 import { DEFAULT_CONFIG } from '../types.js';
 
@@ -25,8 +27,9 @@ import { DEFAULT_CONFIG } from '../types.js';
 
 /**
  * Research types the watcher can identify
+ * Conservative types only - no proactive research
  */
-export type ResearchType = 'direct' | 'alternative' | 'validation';
+export type ResearchType = 'error' | 'stuck' | 'unknown_api' | 'direct';
 
 /**
  * Watcher's decision about whether to research
@@ -40,6 +43,8 @@ export interface WatcherDecision {
   reason: string;
   alternativeHint?: string; // If suspecting different approach
   blockedBy?: string;       // What we already researched
+  projectPath?: string;     // Project this research is for
+  projectContext?: QuickProjectContext;  // Cached project analysis
 }
 
 /**
@@ -170,11 +175,38 @@ export class ConversationWatcher extends EventEmitter {
       return this.createNoResearchDecision('Session not found');
     }
 
-    // Check for recent similar research
+    // Check for recent similar research in DATABASE (not just session memory)
+    // This prevents repeating the same queries across sessions
     const recentMessages = context.recentMessages.slice(-5);
     const combinedText = recentMessages.map(m => m.content).join(' ');
+
+    // Check in-memory session history
     if (this.sessionManager.hasRecentSimilarResearch(sessionId, combinedText, 3600000)) {
-      return this.createNoResearchDecision('Similar research performed recently');
+      return this.createNoResearchDecision('Similar research performed recently (session)');
+    }
+
+    // Check database for recent similar queries (persistent deduplication)
+    try {
+      const db = getDatabase();
+      const dbCheck = db.hasRecentSimilarQuery(combinedText, 3600000);
+      if (dbCheck.found) {
+        this.logger.debug(`Skipping - similar query already in database: "${dbCheck.existingQuery}"`);
+        return this.createNoResearchDecision(`Similar research in database: ${dbCheck.existingQuery}`);
+      }
+    } catch (e) {
+      this.logger.debug('Database dedup check failed', e);
+    }
+
+    // Get project context if project path available
+    let projectContext: QuickProjectContext | undefined;
+    const projectPath = context.projectPath;
+    if (projectPath) {
+      try {
+        const projectService = getProjectContextService();
+        projectContext = await projectService.getQuickContext(projectPath);
+      } catch (e) {
+        this.logger.debug('Failed to get project context', e);
+      }
     }
 
     // Build prompt and call Claude for analysis
@@ -183,6 +215,24 @@ export class ConversationWatcher extends EventEmitter {
     try {
       const response = await this.callClaude(prompt);
       const decision = this.parseWatcherResponse(response);
+
+      // Add project context to decision
+      decision.projectPath = projectPath;
+      decision.projectContext = projectContext;
+
+      // DEDUP CHECK: If AI suggests a query, check if it's already in the database
+      if (decision.shouldResearch && decision.query) {
+        try {
+          const db = getDatabase();
+          const dbCheck = db.hasRecentSimilarQuery(decision.query, 3600000);
+          if (dbCheck.found) {
+            this.logger.info(`Blocking duplicate query: "${decision.query}" similar to "${dbCheck.existingQuery}"`);
+            return this.createNoResearchDecision(`Duplicate query blocked: ${dbCheck.existingQuery}`);
+          }
+        } catch (e) {
+          this.logger.debug('Database dedup check failed for suggested query', e);
+        }
+      }
 
       // Apply confidence thresholds
       if (!this.meetsThreshold(decision)) {
@@ -251,25 +301,18 @@ export class ConversationWatcher extends EventEmitter {
         return {
           shouldResearch: true,
           query: this.extractErrorQuery(text),
-          researchType: 'direct',
-          confidence: 0.6,
+          researchType: 'error',
+          confidence: 0.85,  // Still below 0.9 threshold - let AI decide
           priority: 7,
-          reason: 'Error detected in tool output - passive research triggered',
+          reason: 'Error detected - but need AI confirmation',
         };
       }
     }
 
-    // Check for deprecation warnings
-    if (/deprecated/i.test(text) || /will be removed/i.test(text)) {
-      return {
-        shouldResearch: true,
-        query: this.extractDeprecationQuery(text),
-        researchType: 'validation',
-        confidence: 0.5,
-        priority: 5,
-        reason: 'Deprecation warning detected - checking for alternatives',
-      };
-    }
+    // DISABLED: Deprecation warnings are too noisy and Claude can handle them
+    // if (/deprecated/i.test(text) || /will be removed/i.test(text)) {
+    //   return { ... };
+    // }
 
     // No quick match - return null (no passive research needed)
     return null;
@@ -277,42 +320,11 @@ export class ConversationWatcher extends EventEmitter {
 
   /**
    * Check if proactive/strategic research should be triggered
-   * This is for broader context research, not reactive error handling
+   * DISABLED: This was causing too much irrelevant research
    */
-  checkProactiveTriggers(sessionId: string): WatcherDecision | null {
-    // Check if Claude seems stuck on something
-    const stuckIndicator = this.sessionManager.getStuckIndicator(sessionId, 8);
-    if (stuckIndicator.isStuck && stuckIndicator.focusArea) {
-      this.logger.info(`Stuck detected: ${stuckIndicator.focusArea} for ${stuckIndicator.turns} turns`);
-      return {
-        shouldResearch: true,
-        query: `alternative approaches to ${stuckIndicator.focusArea}`,
-        researchType: 'alternative',
-        confidence: 0.7,
-        priority: 6,
-        reason: `Claude has been focused on "${stuckIndicator.focusArea}" for ${stuckIndicator.turns} turns - may benefit from alternative perspectives`,
-        alternativeHint: `Consider different approach to ${stuckIndicator.focusArea}`,
-      };
-    }
-
-    // Check if it's time for periodic strategic analysis
-    if (this.sessionManager.shouldTriggerStrategicAnalysis(sessionId, 15)) {
-      const strategic = this.sessionManager.getStrategicContext(sessionId);
-      if (strategic && strategic.complementaryAreas.length > 0) {
-        this.sessionManager.markStrategicAnalysis(sessionId);
-        const area = strategic.complementaryAreas[0];
-        this.logger.info(`Strategic analysis triggered: ${area}`);
-        return {
-          shouldResearch: true,
-          query: `${area} for ${strategic.techStack.slice(0, 3).join(' ')} project`,
-          researchType: 'validation',
-          confidence: 0.5,
-          priority: 4,
-          reason: `Periodic strategic check - complementary research on "${area}"`,
-        };
-      }
-    }
-
+  checkProactiveTriggers(_sessionId: string): WatcherDecision | null {
+    // DISABLED: Proactive triggers were causing irrelevant research spam
+    // Claude knows best practices already - only help on actual errors
     return null;
   }
 
@@ -365,15 +377,21 @@ export class ConversationWatcher extends EventEmitter {
   ): string {
     const parts: string[] = [];
 
-    parts.push('You are a CREATIVE research strategist watching Claude work on coding tasks.');
+    parts.push('You are a research assistant watching Claude work on coding tasks.');
     parts.push('');
     parts.push('## Your Role');
-    parts.push('You are NOT here to answer user questions - Claude will manually call research() for that.');
-    parts.push('Instead, you PROACTIVELY identify research that would help Claude work better:');
-    parts.push('- Research that anticipates problems before they happen');
-    parts.push('- Best practices Claude might not be considering');
-    parts.push('- Alternative approaches when Claude seems stuck');
-    parts.push('- Complementary knowledge (e.g., frontend patterns when building backend)');
+    parts.push('Identify research that would DIRECTLY help with what Claude is CURRENTLY working on.');
+    parts.push('');
+    parts.push('GOOD research triggers:');
+    parts.push('- Actual errors Claude is trying to fix');
+    parts.push('- Specific APIs or libraries Claude is actively using');
+    parts.push('- Technical questions directly related to the current task');
+    parts.push('');
+    parts.push('BAD research triggers (DO NOT suggest):');
+    parts.push('- Generic "best practices" for technologies mentioned in passing');
+    parts.push('- Topics tangentially related to keywords (e.g., seeing "session" and researching session management)');
+    parts.push('- Things Claude already knows (common patterns, standard library usage)');
+    parts.push('- Anything not DIRECTLY related to the current task');
     parts.push('');
 
     parts.push('## Current Session Context');
@@ -426,48 +444,39 @@ export class ConversationWatcher extends EventEmitter {
     parts.push(`## Trigger: ${trigger === 'user_prompt' ? 'New user message' : 'Tool completed'}`);
     parts.push('');
 
-    parts.push('## Research Opportunities to Consider');
+    parts.push('## Research Criteria:');
     parts.push('');
-    parts.push('**1. Error Resolution** (High priority if errors present)');
-    parts.push('   - Troubleshooting guides, common fixes, root cause analysis');
+    parts.push('**1. Error Resolution** - Claude encountered an error');
+    parts.push('   - Real error in tool output, not hypothetical issues');
     parts.push('');
-    parts.push('**2. Alternative Approaches** (When Claude seems stuck or iterating)');
-    parts.push('   - Different libraries, patterns, or architectural approaches');
-    parts.push('   - "Is there a fundamentally better way to do this?"');
+    parts.push('**2. Stuck on Specific Problem** - Multiple failed attempts visible');
+    parts.push('   - Claude tried something 2+ times without success');
     parts.push('');
-    parts.push('**3. Best Practices & Patterns** (Proactive quality improvement)');
-    parts.push('   - Industry standards for the detected tech stack');
-    parts.push('   - Security considerations, performance patterns');
+    parts.push('**3. Unfamiliar External API** - Using new third-party library');
+    parts.push('   - Not standard library or common frameworks Claude knows');
     parts.push('');
-    parts.push('**4. Complementary Knowledge** (Broader project context)');
-    parts.push('   - If backend: how will frontend consume this?');
-    parts.push('   - If feature: what about testing, deployment, monitoring?');
-    parts.push('   - What related areas might benefit from research?');
+    parts.push('**CRITICAL: Check if query relates to CURRENT TASK**');
+    parts.push('If working on "fixing dashboard counters", do NOT research:');
+    parts.push('- "Node.js graceful shutdown" (unrelated)');
+    parts.push('- "session management best practices" (tangential keyword match)');
+    parts.push('- "database indexing strategies" (not what theyre doing)');
     parts.push('');
-    parts.push('**5. Future-Proofing** (Anticipate problems)');
-    parts.push('   - Scalability concerns for current approach');
-    parts.push('   - Known issues with detected dependencies');
-    parts.push('   - Migration paths from deprecated patterns');
+    parts.push('Default: shouldResearch: false unless CLEARLY relevant to current task');
     parts.push('');
 
     parts.push('## Your Task');
-    parts.push('Think creatively: What research would make Claude more effective?');
-    parts.push("Don't just react to problems - anticipate needs and suggest proactive research.");
-    parts.push('');
-    parts.push('If suggesting research, be SPECIFIC with the query.');
-    parts.push('Bad: "best practices" → Good: "TypeScript Express error handling middleware patterns 2024"');
+    parts.push('Check: Is this research DIRECTLY related to what Claude is currently doing?');
+    parts.push('If not directly related, set shouldResearch: false.');
     parts.push('');
 
     parts.push('Respond in this exact JSON format:');
     parts.push('{');
-    parts.push('  "shouldResearch": true/false,');
-    parts.push('  "query": "specific, targeted search query",');
-    parts.push('  "researchType": "direct|alternative|validation|proactive",');
-    parts.push('  "confidence": 0.0-1.0,');
+    parts.push('  "shouldResearch": false,  // DEFAULT TO FALSE');
+    parts.push('  "query": "only if shouldResearch is true",');
+    parts.push('  "researchType": "error|stuck|unknown_api",');
+    parts.push('  "confidence": 0.0-1.0,  // Must be 0.9+ to trigger');
     parts.push('  "priority": 1-10,');
-    parts.push('  "reason": "why this research would help Claude",');
-    parts.push('  "alternativeHint": "if suggesting a pivot, describe the alternative",');
-    parts.push('  "blockedBy": "skip if too similar to recent research"');
+    parts.push('  "reason": "specific problem Claude cannot solve"');
     parts.push('}');
 
     return parts.join('\n');
@@ -539,17 +548,20 @@ export class ConversationWatcher extends EventEmitter {
   private meetsThreshold(decision: WatcherDecision): boolean {
     if (!decision.shouldResearch) return false;
 
+    // Use configured threshold (default 0.85 after our changes)
     const baseThreshold = this.settings.confidenceThreshold;
 
     switch (decision.researchType) {
-      case 'direct':
+      case 'error':
+        // Errors are more actionable
         return decision.confidence >= baseThreshold;
-      case 'alternative':
-        // Higher bar for suggesting alternative approaches (5% higher)
+      case 'stuck':
+        // Stuck needs slightly higher confidence
         return decision.confidence >= Math.min(0.95, baseThreshold + 0.05);
-      case 'validation':
+      case 'unknown_api':
         return decision.confidence >= baseThreshold;
       default:
+        // Direct/other types use base threshold
         return decision.confidence >= baseThreshold;
     }
   }
@@ -582,21 +594,7 @@ export class ConversationWatcher extends EventEmitter {
     return `troubleshoot ${firstLine}`;
   }
 
-  private extractDeprecationQuery(text: string): string {
-    // Try to extract what's deprecated
-    const deprecatedMatch = text.match(/['"]?(\w+)['"]?\s*(?:is|has been)?\s*deprecated/i);
-    if (deprecatedMatch) {
-      return `${deprecatedMatch[1]} deprecated alternative replacement`;
-    }
-
-    // Try to extract "will be removed" context
-    const removedMatch = text.match(/(\w+)\s*will be removed/i);
-    if (removedMatch) {
-      return `${removedMatch[1]} replacement migration guide`;
-    }
-
-    return 'deprecated API migration guide';
-  }
+  // extractDeprecationQuery removed - deprecation triggers disabled
 }
 
 // ============================================================================

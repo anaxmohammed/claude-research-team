@@ -2,7 +2,7 @@
  * Documentation Expert Specialist Agent
  *
  * Expert at finding documentation, academic papers, and discussions.
- * Tools: ArXiv, Wikipedia, HackerNews, Official Documentation
+ * Tools: ArXiv, Wikipedia, HackerNews, Reddit, Official Documentation
  */
 
 import {
@@ -15,7 +15,7 @@ import {
 export class DocsExpertAgent extends BaseSpecialistAgent {
   readonly name = 'DocsExpert';
   readonly domain = 'docs';
-  readonly description = 'Documentation search using Wikipedia, ArXiv, HackerNews, and official docs';
+  readonly description = 'Documentation search using Wikipedia, ArXiv, HackerNews, Reddit, and official docs';
 
   constructor() {
     super();
@@ -65,6 +65,13 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
       name: 'devto',
       description: 'Dev.to - developer community articles',
       search: this.searchDevTo.bind(this),
+    });
+
+    // Reddit (via old.reddit.com JSON API - free)
+    this.registerTool({
+      name: 'reddit',
+      description: 'Reddit - community discussions and Q&A',
+      search: this.searchReddit.bind(this),
     });
   }
 
@@ -369,6 +376,73 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
     }
 
     return [];
+  }
+
+  /**
+   * Search Reddit (via old.reddit.com JSON API)
+   */
+  private async searchReddit(query: string, maxResults: number): Promise<SearchResult[]> {
+    // Use Reddit's search JSON endpoint
+    const url = new URL('https://old.reddit.com/search.json');
+    url.searchParams.set('q', query);
+    url.searchParams.set('limit', String(Math.min(maxResults, 25)));
+    url.searchParams.set('sort', 'relevance');
+    url.searchParams.set('t', 'all'); // All time
+
+    const response = await fetchWithTimeout(
+      url.toString(),
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; ResearchBot/1.0)',
+          'Accept': 'application/json',
+        },
+      },
+      10000
+    );
+
+    if (!response.ok) return [];
+
+    interface RedditResponse {
+      data?: {
+        children?: Array<{
+          data: {
+            title: string;
+            permalink: string;
+            selftext?: string;
+            subreddit: string;
+            score: number;
+            num_comments: number;
+            author: string;
+            created_utc: number;
+            url?: string;
+          };
+        }>;
+      };
+    }
+
+    const data = await safeParseJson<RedditResponse>(response);
+    if (!data?.data?.children) return [];
+
+    return data.data.children.map((item, i) => {
+      const post = item.data;
+      const snippet = post.selftext
+        ? post.selftext.slice(0, 200).replace(/\n/g, ' ')
+        : `r/${post.subreddit} • ${post.score} points • ${post.num_comments} comments`;
+
+      return {
+        title: post.title,
+        url: `https://reddit.com${post.permalink}`,
+        snippet,
+        source: 'reddit',
+        relevance: 1 - (i * 0.05),
+        metadata: {
+          subreddit: post.subreddit,
+          score: post.score,
+          comments: post.num_comments,
+          author: post.author,
+        },
+      };
+    });
   }
 
   /**

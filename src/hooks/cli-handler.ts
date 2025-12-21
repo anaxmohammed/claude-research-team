@@ -24,7 +24,7 @@ export const EXIT_CODES = {
 };
 
 /**
- * Create a hook response for context injection
+ * Create a hook response for context injection (hidden from user)
  */
 export function createInjectionResponse(
   hookEventName: string,
@@ -33,6 +33,28 @@ export function createInjectionResponse(
   return {
     continue: true,
     suppressOutput: true,
+    hookSpecificOutput: {
+      hookEventName,
+      additionalContext,
+    },
+  };
+}
+
+/**
+ * Create a hook response for VISIBLE context injection
+ * Shows a condensed message to user while injecting full context to Claude
+ */
+export function createVisibleInjectionResponse(
+  hookEventName: string,
+  additionalContext: string,
+  visibleMessage: string
+): HookResponse {
+  // Output visible message to stdout (will be shown to user)
+  console.log(visibleMessage);
+
+  return {
+    continue: true,
+    suppressOutput: false,  // Don't suppress - let the stdout show
     hookSpecificOutput: {
       hookEventName,
       additionalContext,

@@ -20,8 +20,8 @@
 
 import { EventEmitter } from 'events';
 import { Logger } from '../utils/logger.js';
-import { getMemoryIntegration } from '../memory/memory-integration.js';
 import { getDatabase } from '../database/index.js';
+// NOTE: claude-mem integration removed - using own database only
 import type { ResearchFinding } from '../types.js';
 import { CoordinatorAgent, type PivotSuggestion, type SynthesizedResult, type PriorKnowledge } from '../agents/coordinator.js';
 import { getOperationalSpecialists, type Finding, type BaseSpecialistAgent } from '../agents/specialists/index.js';
@@ -39,6 +39,7 @@ export interface CrewDirective {
   context?: string;
   maxIterations?: number;  // Override default
   sessionId?: string;
+  projectPath?: string;    // Project this research is for
   depth?: 'quick' | 'medium' | 'deep';  // For manual calls with fixed depth
 }
 
@@ -189,7 +190,7 @@ export class AutonomousResearchCrew extends EventEmitter {
     const result = this.buildResult(directive.query, synthesis, allFindings, iteration, startTime, detectedPivot);
 
     // Store final result in memory and get the finding ID
-    const findingId = await this.storeResult(directive.query, result, directive.sessionId);
+    const findingId = await this.storeResult(directive.query, result, directive.sessionId, directive.projectPath);
     if (findingId) {
       result.findingId = findingId;
     }
@@ -326,11 +327,11 @@ export class AutonomousResearchCrew extends EventEmitter {
   private async storeResult(
     query: string,
     result: CrewResult,
-    sessionId?: string
+    _sessionId?: string,  // Unused after claude-mem removal
+    projectPath?: string
   ): Promise<string | undefined> {
     try {
       const db = getDatabase();
-      const memory = getMemoryIntegration();
 
       const fullContent = [
         result.summary,
@@ -356,19 +357,13 @@ export class AutonomousResearchCrew extends EventEmitter {
         depth: 'quick',  // Background research is always quick
         confidence: result.confidence,
         createdAt: Date.now(),
+        projectPath,
       };
 
-      db.saveFinding(finding);
+      db.saveFinding(finding, projectPath);
       this.logger.info(`Stored autonomous research finding: ${finding.id}`);
 
-      // Optionally inject to claude-mem if high quality
-      await memory.initialize();
-      const injectionResult = await memory.injectFindingIfQualified(finding, sessionId);
-      if (injectionResult.injected) {
-        this.logger.info(`Injected to claude-mem: observation #${injectionResult.observationId}`);
-      } else {
-        this.logger.debug(`Not injected to claude-mem: ${injectionResult.reason}`);
-      }
+      // claude-mem integration disabled - using own database only
 
       return finding.id;
     } catch (error) {

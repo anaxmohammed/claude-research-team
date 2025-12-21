@@ -2,7 +2,7 @@
  * Code Expert Specialist Agent
  *
  * Expert at finding code-related resources - libraries, examples, solutions.
- * Tools: GitHub Code Search, StackOverflow, npm Registry, PyPI
+ * Tools: GitHub Code Search, StackOverflow, npm Registry, PyPI, crates.io
  */
 
 import {
@@ -15,7 +15,7 @@ import {
 export class CodeExpertAgent extends BaseSpecialistAgent {
   readonly name = 'CodeExpert';
   readonly domain = 'code';
-  readonly description = 'Code-focused search using GitHub, StackOverflow, npm, and PyPI';
+  readonly description = 'Code-focused search using GitHub, StackOverflow, npm, PyPI, and crates.io';
 
   constructor() {
     super();
@@ -58,6 +58,13 @@ export class CodeExpertAgent extends BaseSpecialistAgent {
       description: 'Google search for GitHub content',
       requiresApiKey: 'SERPER_API_KEY',
       search: this.searchSerperGitHub.bind(this),
+    });
+
+    // crates.io (Rust packages - no API key required)
+    this.registerTool({
+      name: 'crates',
+      description: 'crates.io - Rust packages and crates',
+      search: this.searchCrates.bind(this),
     });
   }
 
@@ -408,6 +415,59 @@ export class CodeExpertAgent extends BaseSpecialistAgent {
       snippet: item.snippet,
       source: 'serper:github',
       relevance: 1 - (i * 0.05),
+    }));
+  }
+
+  /**
+   * Search crates.io (Rust packages)
+   */
+  private async searchCrates(query: string, maxResults: number): Promise<SearchResult[]> {
+    const url = new URL('https://crates.io/api/v1/crates');
+    url.searchParams.set('q', query);
+    url.searchParams.set('per_page', String(maxResults));
+
+    const response = await fetchWithTimeout(
+      url.toString(),
+      {
+        headers: {
+          'User-Agent': 'ResearchBot/1.0 (research tool)',
+          'Accept': 'application/json',
+        },
+      },
+      10000
+    );
+
+    if (!response.ok) return [];
+
+    interface CratesResponse {
+      crates?: Array<{
+        name: string;
+        newest_version: string;
+        description?: string;
+        downloads: number;
+        recent_downloads?: number;
+        repository?: string;
+        documentation?: string;
+        max_stable_version?: string;
+      }>;
+    }
+
+    const data = await safeParseJson<CratesResponse>(response);
+    if (!data?.crates) return [];
+
+    return data.crates.map((crate, i) => ({
+      title: `${crate.name} v${crate.max_stable_version || crate.newest_version}`,
+      url: `https://crates.io/crates/${crate.name}`,
+      snippet: crate.description || `${crate.downloads.toLocaleString()} downloads`,
+      source: 'crates',
+      relevance: 1 - (i * 0.05),
+      metadata: {
+        version: crate.max_stable_version || crate.newest_version,
+        downloads: crate.downloads,
+        recentDownloads: crate.recent_downloads,
+        repository: crate.repository,
+        docs: crate.documentation,
+      },
     }));
   }
 }

@@ -207,3 +207,23 @@ export function getProviderInfo(): { provider: AIProvider; model: string; availa
     available,
   };
 }
+
+/**
+ * Get AI provider interface for simple analysis tasks
+ * Returns an object with an analyze method that takes a prompt
+ */
+export interface AIProviderInterface {
+  analyze(prompt: string): Promise<string>;
+}
+
+export function getAIProvider(): AIProviderInterface {
+  return {
+    async analyze(prompt: string): Promise<string> {
+      const result = await queryAI(prompt, {
+        maxTokens: 1000,
+        temperature: 0.3,  // Lower temperature for analysis tasks
+      });
+      return result.content;
+    },
+  };
+}

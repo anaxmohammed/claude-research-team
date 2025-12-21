@@ -13,8 +13,8 @@
 import type { ResearchTask, ResearchResult, ResearchDepth, ResearchFinding } from '../types.js';
 import { Logger } from '../utils/logger.js';
 import { queryAI } from '../ai/provider.js';
-import { getMemoryIntegration } from '../memory/memory-integration.js';
 import { getDatabase } from '../database/index.js';
+// NOTE: claude-mem integration removed - using own database only
 import { v4 as uuidv4 } from 'uuid';
 
 interface SearchResult {
@@ -40,25 +40,9 @@ const JINA_READER_URL = 'https://r.jina.ai/';
 
 export class ResearchExecutor {
   private logger: Logger;
-  private memoryInitialized: boolean = false;
 
   constructor() {
     this.logger = new Logger('ResearchExecutor');
-  }
-
-  /**
-   * Initialize memory integration
-   */
-  private async ensureMemory(): Promise<void> {
-    if (this.memoryInitialized) return;
-    try {
-      const memory = getMemoryIntegration();
-      await memory.initialize();
-      this.memoryInitialized = true;
-      this.logger.debug('Memory integration ready');
-    } catch (error) {
-      this.logger.warn('Memory integration unavailable, continuing without persistence', error);
-    }
   }
 
   /**
@@ -69,9 +53,7 @@ export class ResearchExecutor {
     const startTime = Date.now();
     const config = DEPTH_CONFIGS[task.depth];
 
-    // Initialize integrations
-    await this.ensureMemory();
-    const memory = getMemoryIntegration();
+    // Using own database only (claude-mem disabled)
     const db = getDatabase();
 
     try {
@@ -125,7 +107,8 @@ export class ResearchExecutor {
           relevance: 1 - (i * 0.05), // Decreasing relevance by position
         })),
         tokensUsed: this.estimateTokens(synthesis.summary),
-        confidence: synthesis.confidence,
+        confidence: synthesis.confidence,  // Source quality score
+        relevance: 0.5,  // Default - actual relevance computed post-research
       };
 
       // Step 4: Store research in local database
@@ -147,19 +130,13 @@ export class ResearchExecutor {
           createdAt: Date.now(),
         };
 
-        db.saveFinding(finding);
-        this.logger.info(`Research stored in local database: ${findingId}`);
+        db.saveFinding(finding, task.projectPath);
+        this.logger.info(`Research stored in local database: ${findingId}`, { projectPath: task.projectPath });
 
         // Add findingId to result for progressive disclosure
         result.findingId = findingId;
 
-        // Step 5: Optionally inject to claude-mem if high quality
-        const injectionResult = await memory.injectFindingIfQualified(finding, task.sessionId);
-        if (injectionResult.injected) {
-          this.logger.info(`Injected to claude-mem: observation #${injectionResult.observationId}`);
-        } else {
-          this.logger.debug(`Not injected to claude-mem: ${injectionResult.reason}`);
-        }
+        // claude-mem integration disabled - using own database only
       } catch (e) {
         this.logger.warn('Failed to store research', e);
       }
@@ -561,6 +538,7 @@ export class ResearchExecutor {
       sources: [],
       tokensUsed: 20,
       confidence: 0,
+      relevance: 0,
     };
   }
 

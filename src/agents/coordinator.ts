@@ -15,6 +15,7 @@
 import { Logger } from '../utils/logger.js';
 import { queryAI } from '../ai/provider.js';
 import type { Finding, BaseSpecialistAgent } from './specialists/base.js';
+import type { QuickProjectContext } from '../context/project-context.js';
 
 // ============================================================================
 // Types
@@ -29,6 +30,8 @@ export interface ResearchDirective {
   priorKnowledge?: PriorKnowledge[];
   maxIterations?: number;
   sessionId?: string;
+  projectPath?: string;
+  projectContext?: QuickProjectContext;  // Cached project analysis
 }
 
 /**
@@ -296,7 +299,7 @@ export class CoordinatorAgent {
     parts.push('You are a research coordinator planning how to investigate a query.');
     parts.push('');
     parts.push(`**Current Date: ${dateStr}**`);
-    parts.push('Prioritize recent information. When searching, favor sources from 2024-2025.');
+    parts.push('Prioritize recent information. Do NOT append years to search queries - the search engines handle recency automatically.');
     parts.push('');
     parts.push(`## Research Query`);
     parts.push(`"${directive.query}"`);
@@ -316,6 +319,23 @@ export class CoordinatorAgent {
       }
       parts.push('');
       parts.push('Build on this prior knowledge. Focus on NEW information not already covered.');
+    }
+
+    // Add project context if available
+    if (directive.projectContext) {
+      const ctx = directive.projectContext;
+      parts.push('');
+      parts.push(`## Project Context`);
+      parts.push(`This research is for a **${ctx.projectType}** project${ctx.projectName ? ` named "${ctx.projectName}"` : ''}.`);
+      if (ctx.framework) {
+        parts.push(`- **Framework**: ${ctx.framework}`);
+      }
+      parts.push(`- **Language**: ${ctx.language}`);
+      if (ctx.techStack.length > 0) {
+        parts.push(`- **Tech Stack**: ${ctx.techStack.join(', ')}`);
+      }
+      parts.push('');
+      parts.push('Prioritize information relevant to this tech stack. Consider project-specific best practices.');
     }
 
     parts.push('');

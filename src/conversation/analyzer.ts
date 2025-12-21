@@ -1,15 +1,17 @@
 /**
  * Conversation Analyzer
  *
- * Maintains conversation state per session and intelligently detects
- * research opportunities by analyzing the flow of tool uses and user prompts.
+ * Maintains conversation state per session and uses AI to intelligently detect
+ * research opportunities by understanding what Claude is trying to accomplish.
  *
- * This is the "streaming conversation watcher" that observes all tool data
- * and decides when research would be helpful.
+ * Key principle: Research should only trigger when genuinely useful.
+ * AI analyzes: "What does Claude actually need to know and is there anything he might be missing?"
  */
 
 import { Logger } from '../utils/logger.js';
-import type { ResearchDepth } from '../types.js';
+import type { ResearchDepth, ResearchDecision } from '../types.js';
+import { getSessionTracker } from '../context/session-tracker.js';
+import { getAIProvider } from '../ai/provider.js';
 
 export interface ConversationEntry {
   type: 'user_prompt' | 'tool_use';
@@ -365,6 +367,225 @@ export class ConversationAnalyzer {
 
     result.reason = 'No research opportunity detected in tool output';
     return result;
+  }
+
+  /**
+   * AI-driven analysis - the smart way to detect research needs
+   * Asks: "What does Claude actually need to know and is there anything he might be missing?"
+   */
+  async analyzeWithAI(
+    sessionId: string,
+    trigger: 'user_prompt' | 'tool_output',
+    content: string,
+    _projectPath?: string  // Reserved for future project-specific context
+  ): Promise<ResearchDecision> {
+    const tracker = getSessionTracker();
+    const ai = getAIProvider();
+
+    // Get full session context
+    const sessionSummary = tracker.getSessionSummary(sessionId);
+
+    // Build analysis prompt
+    const analysisPrompt = `You are a research assistant analyzing Claude's work session. Your job is to determine if external research would genuinely help with the current task.
+
+## Current Session Context
+${sessionSummary}
+
+## Latest ${trigger === 'user_prompt' ? 'User Request' : 'Tool Output'}
+${content.slice(0, 2000)}
+
+## Your Analysis Task
+Consider carefully:
+1. What is Claude currently trying to accomplish?
+2. What knowledge might Claude be missing that would help?
+3. Is there anything Claude might be overlooking or approaching incorrectly?
+4. Would external research actually be useful, or does Claude likely already know this?
+
+IMPORTANT: Only suggest research if it would provide genuinely useful information that Claude likely doesn't already have. Avoid:
+- Generic programming questions Claude already knows
+- Topics already covered in the conversation
+- Tangential information not directly relevant to the task
+
+Respond with JSON only:
+{
+  "shouldResearch": true/false,
+  "query": "specific, targeted search query" (only if shouldResearch is true),
+  "reason": "brief explanation of why research would/wouldn't help",
+  "knowledgeGap": "what Claude might be missing" (only if shouldResearch is true),
+  "expectedRelevance": 0.0-1.0 (how relevant this would be to the actual task),
+  "depth": "quick" | "medium" | "deep",
+  "priority": 1-10
+}`;
+
+    try {
+      const response = await ai.analyze(analysisPrompt);
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+
+        return {
+          shouldResearch: parsed.shouldResearch === true,
+          query: parsed.query,
+          reason: parsed.reason || 'AI analysis',
+          knowledgeGap: parsed.knowledgeGap,
+          expectedRelevance: Math.min(1, Math.max(0, parsed.expectedRelevance || 0.5)),
+          depth: parsed.depth || 'quick',
+          priority: Math.min(10, Math.max(1, parsed.priority || 5)),
+          alternativeHint: parsed.alternativeApproach,
+        };
+      }
+    } catch (error) {
+      this.logger.debug('AI analysis failed, falling back to pattern matching', { error });
+    }
+
+    // Fallback to pattern-based analysis
+    return {
+      shouldResearch: false,
+      reason: 'AI analysis failed, pattern matching found nothing',
+      expectedRelevance: 0,
+      depth: 'quick',
+      priority: 1,
+    };
+  }
+
+  /**
+   * Enhanced tool use processing with AI analysis
+   */
+  async processToolUseWithAI(
+    sessionId: string,
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    toolOutput: string,
+    projectPath?: string
+  ): Promise<{ decision: ResearchDecision; injection: string | null }> {
+    const state = this.getSession(sessionId, projectPath);
+
+    // Track in session tracker
+    const tracker = getSessionTracker();
+    const isError = this.containsError(toolOutput);
+    tracker.recordToolUse(sessionId, toolName, toolInput, toolOutput, isError);
+
+    // Add to conversation history
+    state.entries.push({
+      type: 'tool_use',
+      timestamp: Date.now(),
+      content: { toolName, toolInput, toolOutput },
+    });
+
+    // Trim old entries
+    if (state.entries.length > this.maxEntriesPerSession) {
+      state.entries = state.entries.slice(-this.maxEntriesPerSession);
+    }
+
+    // Check cooldown
+    const timeSinceLastResearch = Date.now() - state.lastResearchTime;
+    if (timeSinceLastResearch < this.researchCooldownMs) {
+      return {
+        decision: {
+          shouldResearch: false,
+          reason: 'Research cooldown active',
+          expectedRelevance: 0,
+          depth: 'quick',
+          priority: 1,
+        },
+        injection: this.getPendingInjection(sessionId, state),
+      };
+    }
+
+    // Use AI analysis for errors and significant outputs
+    const shouldUseAI = isError || toolOutput.length > 500;
+
+    let decision: ResearchDecision;
+    if (shouldUseAI) {
+      decision = await this.analyzeWithAI(sessionId, 'tool_output', toolOutput, projectPath);
+    } else {
+      // Use quick pattern matching for simple cases
+      const opportunity = this.analyzeToolOutput(state, toolOutput, {
+        shouldResearch: false,
+        depth: 'quick',
+        priority: 5,
+        confidence: 0,
+        reason: '',
+        topics: Array.from(state.topics).slice(-5),
+      });
+
+      decision = {
+        shouldResearch: opportunity.shouldResearch,
+        query: opportunity.query,
+        reason: opportunity.reason,
+        expectedRelevance: opportunity.confidence,
+        depth: opportunity.depth,
+        priority: opportunity.priority,
+      };
+    }
+
+    return {
+      decision,
+      injection: this.getPendingInjection(sessionId, state),
+    };
+  }
+
+  /**
+   * Enhanced user prompt processing with AI analysis
+   */
+  async processUserPromptWithAI(
+    sessionId: string,
+    prompt: string,
+    projectPath?: string
+  ): Promise<ResearchDecision> {
+    const state = this.getSession(sessionId, projectPath);
+
+    // Track in session tracker (also analyzes goals)
+    const tracker = getSessionTracker();
+    await tracker.recordUserRequest(sessionId, prompt, projectPath);
+
+    // Add to conversation history
+    state.entries.push({
+      type: 'user_prompt',
+      timestamp: Date.now(),
+      content: { prompt },
+    });
+
+    // Trim old entries
+    if (state.entries.length > this.maxEntriesPerSession) {
+      state.entries = state.entries.slice(-this.maxEntriesPerSession);
+    }
+
+    // Check cooldown
+    const timeSinceLastResearch = Date.now() - state.lastResearchTime;
+    if (timeSinceLastResearch < this.researchCooldownMs) {
+      return {
+        shouldResearch: false,
+        reason: 'Research cooldown active',
+        expectedRelevance: 0,
+        depth: 'quick',
+        priority: 1,
+      };
+    }
+
+    // Use AI analysis
+    return this.analyzeWithAI(sessionId, 'user_prompt', prompt, projectPath);
+  }
+
+  /**
+   * Check if output contains an error
+   */
+  private containsError(output: string): boolean {
+    const errorIndicators = [
+      /error:/i,
+      /Error:/,
+      /ERROR/,
+      /failed/i,
+      /exception/i,
+      /TypeError/,
+      /SyntaxError/,
+      /ReferenceError/,
+      /ENOENT/,
+      /ECONNREFUSED/,
+      /npm ERR!/,
+    ];
+    return errorIndicators.some((pattern) => pattern.test(output));
   }
 
   /**

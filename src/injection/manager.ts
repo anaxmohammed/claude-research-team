@@ -33,6 +33,7 @@ export class InjectionManager {
       maxTokensPerInjection: budget?.maxTokensPerInjection ?? 150,
       maxTotalTokensPerSession: budget?.maxTotalTokensPerSession ?? 500,
       cooldownMs: budget?.cooldownMs ?? 30000,
+      showInConversation: budget?.showInConversation ?? false,
     };
   }
 

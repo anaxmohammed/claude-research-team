@@ -38,6 +38,20 @@ export class ConfigManager {
       try {
         const fileContent = readFileSync(this.configPath, 'utf-8');
         const fileConfig = JSON.parse(fileContent) as Partial<Config>;
+        // Deep merge for nested objects to ensure new fields get defaults
+        if (fileConfig.research) {
+          config.research = { ...DEFAULT_CONFIG.research, ...fileConfig.research };
+          delete fileConfig.research;
+        }
+        if (fileConfig.aiProvider) {
+          config.aiProvider = { ...DEFAULT_CONFIG.aiProvider, ...fileConfig.aiProvider };
+          delete fileConfig.aiProvider;
+        }
+        if (fileConfig.injection) {
+          config.injection = { ...DEFAULT_CONFIG.injection, ...fileConfig.injection };
+          delete fileConfig.injection;
+        }
+        // Merge remaining top-level fields
         Object.assign(config, fileConfig);
       } catch (error) {
         console.warn('Failed to load config file, using defaults:', error);
