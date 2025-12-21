@@ -27,7 +27,7 @@ For simple facts, definitions, quick lookups:
 ```bash
 curl -X POST http://localhost:3200/api/research \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is HTMX?", "depth": "quick"}'
+  -d '{"query": "What is HTMX?", "depth": "quick", "trigger": "manual"}'
 ```
 
 ### Medium Research (~30s) - Default
@@ -35,7 +35,7 @@ For how-to questions, documentation lookup:
 ```bash
 curl -X POST http://localhost:3200/api/research \
   -H "Content-Type: application/json" \
-  -d '{"query": "How to implement rate limiting in FastAPI"}'
+  -d '{"query": "How to implement rate limiting in FastAPI", "trigger": "manual"}'
 ```
 
 ### Deep Research (~60s)
@@ -43,7 +43,7 @@ For comprehensive comparisons, complex topics:
 ```bash
 curl -X POST http://localhost:3200/api/research \
   -H "Content-Type: application/json" \
-  -d '{"query": "Rust vs Go for CLI tools", "depth": "deep"}'
+  -d '{"query": "Rust vs Go for CLI tools", "depth": "deep", "trigger": "manual"}'
 ```
 
 ## Parameters
