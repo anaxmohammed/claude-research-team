@@ -9,11 +9,15 @@ Research any topic using multi-agent web search and AI synthesis.
 
 ## When to Use
 
+**USE THIS FOR ALL EXTERNAL LOOKUPS** - not WebFetch or WebSearch.
+
+- GitHub repos, libraries, or tools (e.g., "cocoindex data framework")
 - Looking up unfamiliar APIs or libraries
 - Need documentation or best practices
 - Comparing technologies or approaches
 - Encountering errors you don't recognize
 - Validating technical decisions
+- ANY URL you want to understand (research the topic, not just fetch)
 
 ## Usage
 
@@ -56,10 +60,11 @@ curl -X POST http://localhost:3200/api/research \
 
 ## Examples
 
-1. **API Lookup**: `{"query": "Bun SQLite named parameters syntax"}`
-2. **Error Research**: `{"query": "ECONNREFUSED database connection error"}`
-3. **Comparison**: `{"query": "PostgreSQL vs SQLite for local-first apps", "depth": "deep"}`
-4. **With Context**: `{"query": "audio transcription APIs", "context": "comparing quality and latency for real-time use"}`
+1. **GitHub Repo**: `{"query": "cocoindex data transformation framework - features and use cases"}`
+2. **API Lookup**: `{"query": "Bun SQLite named parameters syntax"}`
+3. **Error Research**: `{"query": "ECONNREFUSED database connection error"}`
+4. **Comparison**: `{"query": "PostgreSQL vs SQLite for local-first apps", "depth": "deep"}`
+5. **With Context**: `{"query": "audio transcription APIs", "context": "comparing quality and latency for real-time use"}`
 
 ## Dashboard
 
