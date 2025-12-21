@@ -407,9 +407,16 @@ export class SessionManager extends EventEmitter {
     researchHistory: string[];
     recentMessages: ConversationEntry[];
     projectPath?: string;
+    lastUserPrompt?: string;
   } | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
+
+    // Find the most recent user prompt (not just last message)
+    const userPrompts = session.messages.filter(m => m.type === 'user_prompt');
+    const lastUserPrompt = userPrompts.length > 0
+      ? userPrompts[userPrompts.length - 1].content
+      : undefined;
 
     return {
       currentTask: session.currentTask,
@@ -420,6 +427,7 @@ export class SessionManager extends EventEmitter {
         .map(r => r.query),
       recentMessages: session.messages.slice(-maxMessages),
       projectPath: session.projectPath,
+      lastUserPrompt,
     };
   }
 

@@ -379,6 +379,7 @@ export class ConversationWatcher extends EventEmitter {
       recentErrors: string[];
       researchHistory: string[];
       recentMessages: ConversationEntry[];
+      lastUserPrompt?: string;
     },
     trigger: 'user_prompt' | 'tool_output',
     sessionId?: string
@@ -387,19 +388,28 @@ export class ConversationWatcher extends EventEmitter {
 
     parts.push('You are a research assistant watching Claude work on coding tasks.');
     parts.push('');
+
+    // PROMINENTLY show the user's goal
+    if (context.lastUserPrompt) {
+      parts.push('## USER\'S CURRENT REQUEST (THIS IS THE GOAL)');
+      parts.push(`"${context.lastUserPrompt.slice(0, 500)}${context.lastUserPrompt.length > 500 ? '...' : ''}"`);
+      parts.push('');
+      parts.push('Everything Claude is doing (reading files, exploring code) is to accomplish THIS goal.');
+      parts.push('Research should help with THIS goal, not just the current tool action.');
+      parts.push('');
+    }
+
     parts.push('## Your Role');
-    parts.push('Identify research that would DIRECTLY help with what Claude is CURRENTLY working on.');
+    parts.push('Identify research that would help Claude accomplish the USER\'S GOAL above.');
     parts.push('');
-    parts.push('GOOD research triggers:');
-    parts.push('- Actual errors Claude is trying to fix');
-    parts.push('- Specific APIs or libraries Claude is actively using');
-    parts.push('- Technical questions directly related to the current task');
+    parts.push('Think about:');
+    parts.push('- What is Claude trying to achieve? (the goal, not just current action)');
+    parts.push('- What technologies/APIs will be needed for this goal?');
+    parts.push('- What common pitfalls should be researched proactively?');
     parts.push('');
-    parts.push('BAD research triggers (DO NOT suggest):');
-    parts.push('- Generic "best practices" for technologies mentioned in passing');
-    parts.push('- Topics tangentially related to keywords (e.g., seeing "session" and researching session management)');
-    parts.push('- Things Claude already knows (common patterns, standard library usage)');
-    parts.push('- Anything not DIRECTLY related to the current task');
+    parts.push('AVOID:');
+    parts.push('- Generic best practices unrelated to the goal');
+    parts.push('- Things Claude clearly already knows');
     parts.push('');
 
     parts.push('## Current Session Context');
