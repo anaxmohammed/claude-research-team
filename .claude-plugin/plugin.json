@@ -9,9 +9,9 @@
   "license": "AGPL-3.0",
   "keywords": [
     "research",
+    "web-search",
     "agents",
     "context",
-    "memory",
-    "claude-mem"
+    "injection"
   ]
 }

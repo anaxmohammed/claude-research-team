@@ -216,6 +216,15 @@ export class ConversationWatcher extends EventEmitter {
       const response = await this.callClaude(prompt);
       const decision = this.parseWatcherResponse(response);
 
+      // Log decision for debugging
+      this.logger.info('Watcher decision', {
+        shouldResearch: decision.shouldResearch,
+        query: decision.query?.slice(0, 50),
+        type: decision.researchType,
+        confidence: decision.confidence,
+        reason: decision.reason?.slice(0, 100),
+      });
+
       // Add project context to decision
       decision.projectPath = projectPath;
       decision.projectContext = projectContext;
