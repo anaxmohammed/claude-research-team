@@ -194,6 +194,21 @@ export class ConversationWatcher extends EventEmitter {
         this.logger.debug(`Skipping - similar query already in database${simPct}: "${dbCheck.existingQuery}"`);
         return this.createNoResearchDecision(`Similar research in database: ${dbCheck.existingQuery}`);
       }
+
+      // UNIFIED KNOWLEDGE CHECK: Also search claude-mem's observations
+      // This prevents researching topics that already exist as memory observations
+      const claudeMemAdapter = db.getClaudeMemAdapter();
+      if (claudeMemAdapter.isReady()) {
+        const existingKnowledge = claudeMemAdapter.hasExistingKnowledge(combinedText, {
+          maxAgeMs: 7 * 24 * 60 * 60 * 1000,  // 7 days
+          minConfidence: 0.6,
+          project: context.projectPath,
+        });
+        if (existingKnowledge.found) {
+          this.logger.debug(`Skipping - existing knowledge in claude-mem: "${existingKnowledge.existingQuery}" (${(existingKnowledge.confidence! * 100).toFixed(0)}% confidence)`);
+          return this.createNoResearchDecision(`Existing knowledge in claude-mem: ${existingKnowledge.existingQuery}`);
+        }
+      }
     } catch (e) {
       this.logger.debug('Database dedup check failed', e);
     }
@@ -240,6 +255,20 @@ export class ConversationWatcher extends EventEmitter {
             const simPct = dbCheck.similarity ? ` (${(dbCheck.similarity * 100).toFixed(0)}% similar)` : '';
             this.logger.info(`Blocking duplicate query${simPct}: "${decision.query}" similar to "${dbCheck.existingQuery}"`);
             return this.createNoResearchDecision(`Duplicate query blocked: ${dbCheck.existingQuery}`);
+          }
+
+          // UNIFIED KNOWLEDGE CHECK: Also check claude-mem for the suggested query
+          const claudeMemAdapter = db.getClaudeMemAdapter();
+          if (claudeMemAdapter.isReady()) {
+            const existingKnowledge = claudeMemAdapter.hasExistingKnowledge(decision.query, {
+              maxAgeMs: 7 * 24 * 60 * 60 * 1000,  // 7 days
+              minConfidence: 0.6,
+              project: decision.projectPath,
+            });
+            if (existingKnowledge.found) {
+              this.logger.info(`Query blocked - existing knowledge in claude-mem: "${existingKnowledge.existingQuery}"`);
+              return this.createNoResearchDecision(`Existing claude-mem knowledge: ${existingKnowledge.existingQuery}`);
+            }
           }
         } catch (e) {
           this.logger.debug('Database dedup check failed for suggested query', e);

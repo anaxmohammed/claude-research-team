@@ -13,26 +13,31 @@ import type {
   ResearchResult,
   ResearchSource,
   InjectionRecord,
+  InjectionRecordType,
   Session,
   QueueStats,
   ResearchFinding,
   InjectionLogEntry,
   SourceQualityEntry,
   InjectionTriggerReason,
+  ClaudeMemConfig,
 } from '../types.js';
 import { VectorService, type SemanticSearchOptions, type VectorSearchResult } from '../vector/index.js';
+import { ClaudeMemAdapter, type SaveResearchResult } from '../adapters/claude-mem-adapter.js';
 
 export class ResearchDatabase {
   private db: SqliteDatabase;
   private dataDir: string;
   private vectorService: VectorService;
   private vectorReady: boolean = false;
+  private claudeMemAdapter: ClaudeMemAdapter;
 
-  constructor(dataDir: string = '~/.claude-research-team') {
+  constructor(dataDir: string = '~/.claude-research-team', claudeMemConfig?: Partial<ClaudeMemConfig>) {
     this.dataDir = dataDir.replace('~', homedir());
     this.ensureDataDir();
     this.db = openDatabaseSync(join(this.dataDir, 'research.db'));
     this.vectorService = new VectorService();
+    this.claudeMemAdapter = new ClaudeMemAdapter(claudeMemConfig);
     this.initialize();
     // Initialize vector service asynchronously
     this.initVectorService();
@@ -57,6 +62,26 @@ export class ResearchDatabase {
 
   getVectorService(): VectorService {
     return this.vectorService;
+  }
+
+  // ============================================================================
+  // Claude-Mem Integration Status
+  // ============================================================================
+
+  isClaudeMemReady(): boolean {
+    return this.claudeMemAdapter.isReady();
+  }
+
+  isClaudeMemFallback(): boolean {
+    return this.claudeMemAdapter.isFallbackMode();
+  }
+
+  getClaudeMemAdapter(): ClaudeMemAdapter {
+    return this.claudeMemAdapter;
+  }
+
+  getClaudeMemStats(): { observationsCount: number; researchTasksCount: number } | null {
+    return this.claudeMemAdapter.getStats();
   }
 
   private ensureDataDir(): void {
@@ -96,6 +121,17 @@ export class ResearchDatabase {
       // Table doesn't exist yet - will be created in initialize()
     }
 
+    // Migration: Add injection_type to injection_log (for unified knowledge tracking)
+    try {
+      const columns = this.db.pragma('table_info(injection_log)') as Array<{ name: string }>;
+      const hasType = columns.some(col => col.name === 'injection_type');
+      if (!hasType) {
+        this.db.exec("ALTER TABLE injection_log ADD COLUMN injection_type TEXT DEFAULT 'research-only'");
+      }
+    } catch {
+      // Table doesn't exist yet - will be created in initialize()
+    }
+
     // Migration: Add result_finding_id to research_tasks (for deduplication)
     try {
       const columns = this.db.pragma('table_info(research_tasks)') as Array<{ name: string }>;
@@ -113,6 +149,17 @@ export class ResearchDatabase {
       const hasRelevance = columns.some(col => col.name === 'result_relevance');
       if (!hasRelevance) {
         this.db.exec('ALTER TABLE research_tasks ADD COLUMN result_relevance REAL');
+      }
+    } catch {
+      // Table doesn't exist yet - will be created in initialize()
+    }
+
+    // Migration: Add injection_type to injection_records (for unified knowledge injections)
+    try {
+      const columns = this.db.pragma('table_info(injection_records)') as Array<{ name: string }>;
+      const hasType = columns.some(col => col.name === 'injection_type');
+      if (!hasType) {
+        this.db.exec('ALTER TABLE injection_records ADD COLUMN injection_type TEXT DEFAULT \'task\'');
       }
     } catch {
       // Table doesn't exist yet - will be created in initialize()
@@ -562,8 +609,8 @@ export class ResearchDatabase {
 
   recordInjection(record: InjectionRecord): void {
     this.db.prepare(`
-      INSERT INTO injection_records (id, task_id, session_id, injected_at, content, tokens_used, accepted)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO injection_records (id, task_id, session_id, injected_at, content, tokens_used, accepted, injection_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id,
       record.taskId,
@@ -571,7 +618,8 @@ export class ResearchDatabase {
       record.injectedAt,
       record.content,
       record.tokensUsed,
-      record.accepted ? 1 : 0
+      record.accepted ? 1 : 0,
+      record.injectionType || 'task'
     );
 
     // Update session stats
@@ -597,6 +645,7 @@ export class ResearchDatabase {
       content: row.content as string,
       tokensUsed: row.tokens_used as number,
       accepted: (row.accepted as number) === 1,
+      injectionType: (row.injection_type as string || 'task') as InjectionRecordType,
     }));
   }
 
@@ -658,7 +707,24 @@ export class ResearchDatabase {
   // Research Findings (Progressive Disclosure)
   // ============================================================================
 
-  saveFinding(finding: ResearchFinding, projectPath?: string): void {
+  /**
+   * Save a research finding to the local database and optionally to claude-mem
+   * @param finding The research finding to save
+   * @param options Optional parameters for dual-write
+   * @returns SaveResearchResult if saved to claude-mem, undefined otherwise
+   */
+  saveFinding(
+    finding: ResearchFinding,
+    options?: {
+      projectPath?: string;
+      sessionId?: string;
+      skipClaudeMem?: boolean;
+    }
+  ): SaveResearchResult | undefined {
+    const { projectPath, sessionId, skipClaudeMem = false } = options || {};
+    const resolvedProjectPath = projectPath || finding.projectPath || null;
+
+    // 1. Save to local research.db (primary storage)
     this.db.prepare(`
       INSERT INTO research_findings (
         id, query, summary, key_points, full_content, sources, domain, depth, confidence, created_at, last_accessed_at, project_path
@@ -683,8 +749,30 @@ export class ResearchDatabase {
       finding.confidence,
       finding.createdAt,
       Date.now(),
-      projectPath || finding.projectPath || null
+      resolvedProjectPath
     );
+
+    // 2. Dual-write to claude-mem if enabled and ready
+    let claudeMemResult: SaveResearchResult | undefined;
+
+    if (!skipClaudeMem && this.claudeMemAdapter.isReady() && sessionId) {
+      try {
+        const result = this.claudeMemAdapter.saveResearchAsObservation(
+          finding,
+          sessionId,
+          resolvedProjectPath || 'unknown'
+        );
+        if (result) {
+          claudeMemResult = result;
+          console.log(`[DB] Dual-write to claude-mem: observation #${result.observationId}`);
+        }
+      } catch (error) {
+        // Log but don't fail - local save succeeded
+        console.warn('[DB] Failed to dual-write to claude-mem:', error);
+      }
+    }
+
+    return claudeMemResult;
   }
 
   getFinding(id: string): ResearchFinding | null {
@@ -1037,8 +1125,8 @@ export class ResearchDatabase {
   logInjection(log: InjectionLogEntry): number {
     const result = this.db.prepare(`
       INSERT INTO injection_log (
-        finding_id, session_id, injected_at, injection_level, trigger_reason, followup_injected, effectiveness_score, resolved_issue, project_path
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        finding_id, session_id, injected_at, injection_level, trigger_reason, followup_injected, effectiveness_score, resolved_issue, project_path, injection_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       log.findingId,
       log.sessionId,
@@ -1048,7 +1136,8 @@ export class ResearchDatabase {
       log.followupInjected ? 1 : 0,
       log.effectivenessScore ?? null,
       log.resolvedIssue ? 1 : 0,
-      log.projectPath || null
+      log.projectPath || null,
+      log.injectionType || 'research-only'
     );
 
     return result.lastInsertRowid as number;
@@ -1070,6 +1159,7 @@ export class ResearchDatabase {
       effectivenessScore: row.effectiveness_score as number | undefined,
       resolvedIssue: (row.resolved_issue as number) === 1,
       projectPath: row.project_path as string | undefined,
+      injectionType: row.injection_type as InjectionRecordType | undefined,
     }));
   }
 
@@ -1086,8 +1176,9 @@ export class ResearchDatabase {
     depth: string;
     triggerReason?: string;
     projectPath?: string;
+    injectionType?: string;
   }> {
-    let query = `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason, il.project_path,
+    let query = `SELECT il.id, il.session_id, il.injected_at, il.trigger_reason, il.project_path, il.injection_type,
                         rf.query, rf.summary, rf.confidence, rf.depth
                  FROM injection_log il
                  JOIN research_findings rf ON il.finding_id = rf.id
@@ -1119,6 +1210,7 @@ export class ResearchDatabase {
       depth: (row.depth as string) || 'medium',
       triggerReason: row.trigger_reason as string | undefined,
       projectPath: row.project_path as string | undefined,
+      injectionType: row.injection_type as string | undefined,
     }));
   }
 

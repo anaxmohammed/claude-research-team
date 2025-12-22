@@ -327,7 +327,7 @@ export class AutonomousResearchCrew extends EventEmitter {
   private async storeResult(
     query: string,
     result: CrewResult,
-    _sessionId?: string,  // Unused after claude-mem removal
+    sessionId?: string,
     projectPath?: string
   ): Promise<string | undefined> {
     try {
@@ -360,10 +360,10 @@ export class AutonomousResearchCrew extends EventEmitter {
         projectPath,
       };
 
-      db.saveFinding(finding, projectPath);
-      this.logger.info(`Stored autonomous research finding: ${finding.id}`);
-
-      // claude-mem integration disabled - using own database only
+      const claudeMemResult = db.saveFinding(finding, { projectPath, sessionId });
+      this.logger.info(`Stored autonomous research finding: ${finding.id}`, {
+        claudeMemObservationId: claudeMemResult?.observationId,
+      });
 
       return finding.id;
     } catch (error) {

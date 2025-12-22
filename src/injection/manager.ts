@@ -1,6 +1,10 @@
 /**
  * Injection Manager
  * Controls when and what research results get injected into Claude's context
+ *
+ * Supports two modes:
+ * 1. Task-based injection (existing): Inject completed research tasks
+ * 2. Unified knowledge injection (new): Combine memory + research from claude-mem
  */
 
 import { randomUUID } from 'crypto';
@@ -12,11 +16,27 @@ import type {
 } from '../types.js';
 import { ResearchDatabase, getDatabase } from '../database/index.js';
 import { Logger } from '../utils/logger.js';
+import {
+  formatMemoryInjection,
+  formatResearchInjection,
+  formatCombinedInjection,
+  formatTaskInjection,
+  type FormattedInjection,
+  type InjectionType,
+} from './formatters.js';
 
 interface InjectionCandidate {
   task: ResearchTask;
   score: number;
   reason: string;
+}
+
+interface UnifiedInjectionResult {
+  type: InjectionType;
+  content: string;
+  tokensEstimate: number;
+  memoryId?: number;
+  researchId?: string;
 }
 
 export class InjectionManager {
@@ -110,6 +130,131 @@ export class InjectionManager {
     this.recordInjection(sessionId, best.task, formatted);
 
     return formatted;
+  }
+
+  /**
+   * Get unified knowledge injection from claude-mem
+   * Combines memory observations with research findings
+   * Returns formatted context string or null if nothing suitable
+   */
+  getUnifiedInjection(
+    sessionId: string,
+    query: string,
+    options: {
+      project?: string;
+      context?: string;
+    } = {}
+  ): UnifiedInjectionResult | null {
+    // Get session info
+    const session = this.db.getSession(sessionId);
+    if (!session) {
+      this.logger.debug('No session found for unified injection', { sessionId });
+      return null;
+    }
+
+    // Check budget constraints
+    if (!this.canInject(session)) {
+      this.logger.debug('Budget exceeded for unified injection', { sessionId });
+      return null;
+    }
+
+    // Check cooldown
+    if (this.isInCooldown(sessionId)) {
+      this.logger.debug('In cooldown for unified injection', { sessionId });
+      return null;
+    }
+
+    // Get claude-mem adapter
+    const claudeMemAdapter = this.db.getClaudeMemAdapter();
+    if (!claudeMemAdapter.isReady()) {
+      this.logger.debug('Claude-mem adapter not ready, skipping unified injection');
+      return null;
+    }
+
+    // Get best candidates from unified knowledge base
+    const { memory, research } = claudeMemAdapter.getBestCandidatesForInjection(query, {
+      project: options.project,
+      context: options.context,
+    });
+
+    // Determine injection type
+    const injectionType = claudeMemAdapter.determineInjectionType(memory, research);
+
+    if (injectionType === 'none') {
+      this.logger.debug('No suitable unified knowledge found', { sessionId, query });
+      return null;
+    }
+
+    // Format based on injection type
+    let formatted: FormattedInjection;
+
+    switch (injectionType) {
+      case 'memory-only':
+        if (!memory) return null;
+        formatted = formatMemoryInjection(memory);
+        break;
+
+      case 'research-only':
+        if (!research) return null;
+        formatted = formatResearchInjection(research);
+        break;
+
+      case 'combined':
+        if (!memory || !research) return null;
+        formatted = formatCombinedInjection(memory, research);
+        break;
+
+      default:
+        return null;
+    }
+
+    this.logger.info('Generated unified injection', {
+      type: formatted.type,
+      tokensEstimate: formatted.tokensEstimate,
+      memoryId: formatted.sources.memory?.id,
+      researchId: formatted.sources.research?.id,
+    });
+
+    // Record the injection
+    this.recordUnifiedInjection(sessionId, formatted);
+
+    return {
+      type: formatted.type,
+      content: formatted.content,
+      tokensEstimate: formatted.tokensEstimate,
+      memoryId: formatted.sources.memory?.id,
+      researchId: formatted.sources.research?.id,
+    };
+  }
+
+  /**
+   * Record a unified injection (memory + research combined)
+   */
+  private recordUnifiedInjection(sessionId: string, injection: FormattedInjection): void {
+    // Create a synthetic task ID for tracking
+    const taskId = `unified-${injection.type}-${Date.now()}`;
+
+    const record: InjectionRecord = {
+      id: randomUUID(),
+      taskId,
+      sessionId,
+      injectedAt: Date.now(),
+      content: injection.content,
+      tokensUsed: injection.tokensEstimate,
+      accepted: true,
+      injectionType: injection.type as InjectionRecord['injectionType'],
+    };
+
+    this.db.recordInjection(record);
+
+    // Update cooldown tracker
+    this.lastInjectionTime.set(sessionId, Date.now());
+
+    this.logger.info('Unified injection recorded', {
+      type: injection.type,
+      sessionId,
+      tokensUsed: injection.tokensEstimate,
+    });
   }
 
   /**
@@ -230,52 +375,10 @@ export class InjectionManager {
 
   /**
    * Format research result for injection
-   * Keep it concise to minimize context pollution
-   * Includes prompt to inquire for more details if needed
-   * Handles pivot suggestions for alternative approaches
+   * Uses the new formatters module for consistent formatting
    */
   private formatInjection(task: ResearchTask): string {
-    if (!task.result) return '';
-
-    const parts: string[] = [];
-
-    parts.push(`<research-context query="${task.query}">`);
-
-    // Add summary (truncated if needed)
-    let summary = task.result.summary;
-    const maxLength = this.budget.maxTokensPerInjection * 4; // ~4 chars per token
-    if (summary.length > maxLength) {
-      summary = summary.slice(0, maxLength - 3) + '...';
-    }
-    parts.push(summary);
-
-    // Add top source if available
-    if (task.result.sources.length > 0) {
-      const topSource = task.result.sources[0];
-      parts.push(`Source: ${topSource.title} (${topSource.url})`);
-    }
-
-    // Add pivot suggestion if present (alternative approach detected)
-    if (task.result.pivot) {
-      parts.push('');
-      const pivot = task.result.pivot;
-      const urgencyEmoji = pivot.urgency === 'high' ? '🚨' :
-                          pivot.urgency === 'medium' ? '💡' : 'ℹ️';
-      parts.push(`${urgencyEmoji} **Alternative Approach Detected:**`);
-      parts.push(`${pivot.alternative}`);
-      parts.push(`_Reason: ${pivot.reason}_`);
-    }
-
-    // Prompt to inquire for more - teaches Claude to use research tools
-    const sourceCount = task.result.sources.length;
-    if (sourceCount > 1 || task.result.fullContent.length > summary.length * 2) {
-      parts.push('');
-      parts.push(`💡 ${sourceCount} sources available. Use /research-status for full findings, or mem-search skill for related past research.`);
-    }
-
-    parts.push('</research-context>');
-
-    return parts.join('\n');
+    return formatTaskInjection(task, { maxTokens: this.budget.maxTokensPerInjection });
   }
 
   /**

@@ -43,9 +43,10 @@ function wrapBunDatabase(bunDb: unknown): SqliteDatabase {
       // Bun uses query() instead of pragma()
       const stmt = db.query(`PRAGMA ${pragmaStr}`);
 
-      // Some pragmas return multiple rows (table_info, index_list, etc.)
+      // Some pragmas return multiple rows (table_info, index_list, table_list, etc.)
       // Others return a single value (journal_mode, etc.)
-      if (pragmaStr.includes('table_info') || pragmaStr.includes('index_list') || pragmaStr.includes('index_info')) {
+      const multiRowPragmas = ['table_info', 'index_list', 'index_info', 'table_list'];
+      if (multiRowPragmas.some(p => pragmaStr.includes(p))) {
         return stmt.all();
       }
 

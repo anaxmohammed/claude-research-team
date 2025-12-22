@@ -954,6 +954,89 @@ _Previously researched - use /research-detail ${recentRelevant.id} for more_
       }
     });
 
+    // Get a specific finding by ID (for /research-detail skill)
+    this.app.get('/api/findings/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const db = this.queue.getDatabase();
+        const finding = db.getFinding(id);
+
+        if (!finding) {
+          res.status(404).json(this.errorResponse(`Finding not found: ${id}`));
+          return;
+        }
+
+        res.json(this.successResponse(finding));
+      } catch (error) {
+        this.logger.error('Failed to get finding', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
+    // Search unified knowledge base (claude-mem + research)
+    // NOTE: This route must come BEFORE /api/knowledge/:id to avoid matching "search" as an ID
+    this.app.get('/api/knowledge/search', async (req, res) => {
+      try {
+        const query = req.query.q as string;
+        if (!query) {
+          res.status(400).json(this.errorResponse('Query parameter "q" required'));
+          return;
+        }
+
+        const limit = parseInt(req.query.limit as string) || 10;
+        const project = req.query.project as string | undefined;
+
+        const db = this.queue.getDatabase();
+        const claudeMemAdapter = db.getClaudeMemAdapter();
+
+        if (!claudeMemAdapter.isReady()) {
+          res.status(503).json(this.errorResponse('claude-mem not available'));
+          return;
+        }
+
+        const results = claudeMemAdapter.searchUnifiedKnowledge(query, {
+          limit,
+          project,
+        });
+
+        res.json(this.successResponse(results));
+      } catch (error) {
+        this.logger.error('Failed to search knowledge', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
+    // Get a specific observation from claude-mem by ID
+    // For unified knowledge lookup (memory + research)
+    this.app.get('/api/knowledge/:id', async (req, res) => {
+      try {
+        const id = parseInt(req.params.id);
+        if (isNaN(id)) {
+          res.status(400).json(this.errorResponse('Invalid observation ID'));
+          return;
+        }
+
+        const db = this.queue.getDatabase();
+        const claudeMemAdapter = db.getClaudeMemAdapter();
+
+        if (!claudeMemAdapter.isReady()) {
+          res.status(503).json(this.errorResponse('claude-mem not available'));
+          return;
+        }
+
+        const observation = claudeMemAdapter.getObservation(id);
+        if (!observation) {
+          res.status(404).json(this.errorResponse(`Observation not found: ${id}`));
+          return;
+        }
+
+        res.json(this.successResponse(observation));
+      } catch (error) {
+        this.logger.error('Failed to get knowledge', error);
+        res.status(500).json(this.errorResponse(String(error)));
+      }
+    });
+
     // Get all projects with research findings
     this.app.get('/api/projects', async (_req, res) => {
       try {
@@ -1450,11 +1533,17 @@ _Previously researched - use /research-detail ${recentRelevant.id} for more_
     .task-badge.manual { background: #fef3c7; color: #b45309; }
     .task-badge.autonomous { background: #faf5ff; color: #7c3aed; }
     .task-badge.injected { background: #ecfdf5; color: #059669; }
+    .task-badge.injected.memory-only { background: #fef3c7; color: #92400e; }
+    .task-badge.injected.combined { background: #dbeafe; color: #1e40af; }
+    .task-badge.injected.warning { background: #fef2f2; color: #b91c1c; }
 
     .task-card.user { border-left: 3px solid #0369a1; }
     .task-card.manual { border-left: 3px solid #b45309; }
     .task-card.autonomous { border-left: 3px solid #7c3aed; }
     .task-card.injected { border-left: 3px solid #059669; }
+    .task-card.injected.memory-only { border-left-color: #d97706; }
+    .task-card.injected.combined { border-left-color: #2563eb; }
+    .task-card.injected.warning { border-left-color: #dc2626; }
 
     .filter-bar {
       display: flex;
@@ -2404,9 +2493,30 @@ _Previously researched - use /research-detail ${recentRelevant.id} for more_
             badgeIcon = '✨ ';
             break;
           case 'injected':
-            badgeClass = 'injected';
-            badgeText = 'injected';
-            badgeIcon = '💉 ';
+            // Differentiate injection types for unified knowledge
+            switch(item.injectionType) {
+              case 'memory-only':
+                badgeClass = 'injected memory-only';
+                badgeText = 'memory';
+                badgeIcon = '🧠 ';
+                break;
+              case 'combined':
+                badgeClass = 'injected combined';
+                badgeText = 'mem+research';
+                badgeIcon = '🔗 ';
+                break;
+              case 'warning':
+                badgeClass = 'injected warning';
+                badgeText = 'pivot';
+                badgeIcon = '⚠️ ';
+                break;
+              case 'research-only':
+              default:
+                badgeClass = 'injected';
+                badgeText = 'research';
+                badgeIcon = '🔬 ';
+                break;
+            }
             break;
         }
 
@@ -2492,8 +2602,11 @@ _Previously researched - use /research-detail ${recentRelevant.id} for more_
           metaExtra = \`<span>· \${item.result.tokensUsed || 0} tokens</span>\`;
         }
 
+        // Include injection type class for proper styling
+        const injectionTypeClass = item.itemType === 'injected' && item.injectionType ? item.injectionType : '';
+
         return \`
-          <div class="task-card \${item.itemType}" data-id="\${item.id}">
+          <div class="task-card \${item.itemType} \${injectionTypeClass}" data-id="\${item.id}">
             <div class="task-card-header">
               <span class="task-badge \${badgeClass}">
                 \${badgeIcon}\${badgeText}
@@ -2599,6 +2712,7 @@ _Previously researched - use /research-detail ${recentRelevant.id} for more_
             items.push({
               id: 'injection-' + i.id,
               itemType: 'injected',
+              injectionType: i.injectionType || 'research-only',
               query: i.query,
               summary: i.summary,
               confidence: i.confidence,

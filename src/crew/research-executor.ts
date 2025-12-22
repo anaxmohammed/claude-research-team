@@ -157,8 +157,14 @@ export class ResearchExecutor {
           createdAt: Date.now(),
         };
 
-        db.saveFinding(finding, task.projectPath);
-        this.logger.info(`Research stored in local database: ${findingId}`, { projectPath: task.projectPath });
+        const claudeMemResult = db.saveFinding(finding, {
+          projectPath: task.projectPath,
+          sessionId: task.sessionId,
+        });
+        this.logger.info(`Research stored in local database: ${findingId}`, {
+          projectPath: task.projectPath,
+          claudeMemObservationId: claudeMemResult?.observationId,
+        });
 
         // Embed finding in vector database for semantic search
         try {

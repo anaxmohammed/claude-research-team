@@ -68,14 +68,17 @@ export interface ResearchSource {
 // Injection Types
 // ============================================================================
 
+export type InjectionRecordType = 'task' | 'memory-only' | 'research-only' | 'combined' | 'warning';
+
 export interface InjectionRecord {
   id: string;
-  taskId: string;          // Reference to research task
+  taskId: string;          // Reference to research task or synthetic ID
   sessionId: string;
   injectedAt: number;
   content: string;         // What was injected
   tokensUsed: number;
   accepted: boolean;       // Was it useful? (feedback)
+  injectionType?: InjectionRecordType;  // Type of injection (unified knowledge)
 }
 
 // ============================================================================
@@ -140,6 +143,7 @@ export interface InjectionLogEntry {
   effectivenessScore?: number; // -1 to 1, from implicit feedback
   resolvedIssue: boolean;     // Did this help resolve the issue?
   projectPath?: string;       // Project this injection was for
+  injectionType?: InjectionRecordType;  // Type of unified injection (memory/research/combined)
 }
 
 /**
@@ -322,6 +326,31 @@ export interface AIProviderConfig {
   geminiModel: GeminiModel;        // Gemini model (default: gemini-2.0-flash-exp)
 }
 
+/**
+ * Claude-Mem Integration Configuration
+ * Controls how research-team integrates with claude-mem's unified knowledge base
+ */
+export interface ClaudeMemConfig {
+  // Database
+  enabled: boolean;                  // Enable claude-mem integration
+  dbPath: string;                    // Path to claude-mem.db
+
+  // Knowledge search thresholds (for combined injection decisions)
+  minRelevanceScore: number;         // 0-1, minimum to consider for injection
+  memoryOnlyThreshold: number;       // Score threshold to inject memory only
+  researchOnlyThreshold: number;     // Score threshold to inject research only
+  combinedThreshold: number;         // Score for both memory + research
+
+  // Fallback behavior
+  enableFallbackMode: boolean;       // Use local DB if claude-mem unavailable
+
+  // Token budgets for combined injections
+  memoryOnlyTokens: number;          // Max tokens for memory-only injection
+  researchOnlyTokens: number;        // Max tokens for research-only injection
+  combinedTokens: number;            // Max tokens for combined injection
+  warningTokens: number;             // Max tokens for warning/pivot injection
+}
+
 export interface Config {
   // Service
   port: number;
@@ -344,9 +373,12 @@ export interface Config {
   // Queue
   queue: QueueConfig;
 
-  // Integration
-  claudeMemSync: boolean;  // Sync findings to claude-mem
-  claudeMemUrl?: string;   // URL if sync enabled
+  // Integration (legacy - use claudeMem instead)
+  claudeMemSync: boolean;  // Sync findings to claude-mem (deprecated)
+  claudeMemUrl?: string;   // URL if sync enabled (deprecated)
+
+  // Claude-Mem Integration (new unified approach)
+  claudeMem: ClaudeMemConfig;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -390,6 +422,27 @@ export const DEFAULT_CONFIG: Config = {
   },
 
   claudeMemSync: false,
+
+  // Claude-Mem Integration defaults (matches vision document)
+  claudeMem: {
+    enabled: true,                          // Enable by default
+    dbPath: '~/.claude-mem/claude-mem.db',  // Standard claude-mem location
+
+    // Knowledge search thresholds
+    minRelevanceScore: 0.5,                 // Minimum to consider
+    memoryOnlyThreshold: 0.8,               // High memory match = memory only
+    researchOnlyThreshold: 0.6,             // Research threshold
+    combinedThreshold: 0.6,                 // Both must exceed for combined
+
+    // Fallback behavior
+    enableFallbackMode: true,               // Use local DB if unavailable
+
+    // Token budgets (from vision document)
+    memoryOnlyTokens: 80,                   // ~80 tokens for memory
+    researchOnlyTokens: 100,                // ~100 tokens for research
+    combinedTokens: 150,                    // ~150 tokens for combined
+    warningTokens: 120,                     // ~120 tokens for warnings
+  },
 };
 
 // ============================================================================

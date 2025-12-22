@@ -51,6 +51,10 @@ export class ConfigManager {
           config.injection = { ...DEFAULT_CONFIG.injection, ...fileConfig.injection };
           delete fileConfig.injection;
         }
+        if (fileConfig.claudeMem) {
+          config.claudeMem = { ...DEFAULT_CONFIG.claudeMem, ...fileConfig.claudeMem };
+          delete fileConfig.claudeMem;
+        }
         // Merge remaining top-level fields
         Object.assign(config, fileConfig);
       } catch (error) {
@@ -73,6 +77,16 @@ export class ConfigManager {
     }
     if (process.env.CLAUDE_MEM_URL) {
       config.claudeMemUrl = process.env.CLAUDE_MEM_URL;
+    }
+
+    // Claude-Mem Integration environment variables
+    if (process.env.CLAUDE_MEM_ENABLED === 'false') {
+      config.claudeMem.enabled = false;
+    } else if (process.env.CLAUDE_MEM_ENABLED === 'true') {
+      config.claudeMem.enabled = true;
+    }
+    if (process.env.CLAUDE_MEM_DB_PATH) {
+      config.claudeMem.dbPath = process.env.CLAUDE_MEM_DB_PATH;
     }
 
     return config;
