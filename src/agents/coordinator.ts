@@ -57,7 +57,7 @@ export interface ResearchPlan {
  * A planned step for specialists
  */
 export interface PlannedStep {
-  specialist: 'web' | 'code' | 'docs';
+  specialist: 'web' | 'code' | 'docs' | 'community' | 'research';
   query: string;
   priority: number;
   rationale?: string;
@@ -222,6 +222,13 @@ export class CoordinatorAgent {
 
   /**
    * Quick decision: which specialists should handle this query?
+   *
+   * Agent routing:
+   * - DocsExpert: Library/framework questions, "how to use X"
+   * - CodeExpert: Implementation examples, "show me code that does X"
+   * - CommunityExpert: Opinions, comparisons, "what do people think of X"
+   * - ResearchExpert: Concepts, definitions, "what is X"
+   * - WebSearch: General fallback, current events, broad searches
    */
   selectSpecialists(
     query: string,
@@ -230,35 +237,55 @@ export class CoordinatorAgent {
     const queryLower = query.toLowerCase();
     const selected: string[] = [];
 
-    // Code-related queries
+    // DocsExpert: Library/package documentation queries
     if (
-      queryLower.match(/\b(code|function|class|api|library|package|npm|pip|github|stackoverflow)\b/) ||
-      queryLower.match(/\b(implement|bug|error|exception|debug)\b/) ||
-      queryLower.match(/\b(typescript|javascript|python|rust|go|react|vue|angular)\b/)
-    ) {
-      if (availableSpecialists.has('code')) selected.push('code');
-    }
-
-    // Documentation queries
-    if (
-      queryLower.match(/\b(documentation|docs|tutorial|guide|how to|what is|explain)\b/) ||
-      queryLower.match(/\b(wikipedia|arxiv|paper|article|research)\b/) ||
-      queryLower.match(/\b(hackernews|discussion|opinion|comparison)\b/)
+      queryLower.match(/\b(documentation|docs|library|package|npm|pip|crates|cargo)\b/) ||
+      queryLower.match(/\b(how to use|how do i|using|middleware|routing|configuration)\b/) ||
+      queryLower.match(/\b(react|vue|angular|svelte|next|hono|express|fastify|django|flask)\b/)
     ) {
       if (availableSpecialists.has('docs')) selected.push('docs');
     }
 
-    // General web queries (default if nothing else matches or for broad searches)
-    if (selected.length === 0 || queryLower.match(/\b(search|find|latest|news|current)\b/)) {
+    // CodeExpert: Code implementation queries
+    if (
+      queryLower.match(/\b(code|function|class|implement|example|snippet)\b/) ||
+      queryLower.match(/\b(github|stackoverflow|bug|error|exception|debug)\b/) ||
+      queryLower.match(/\b(show me|how to implement|code for)\b/)
+    ) {
+      if (availableSpecialists.has('code')) selected.push('code');
+    }
+
+    // CommunityExpert: Opinion/discussion queries
+    if (
+      queryLower.match(/\b(vs|versus|opinion|think|better|worth|should i|recommend)\b/) ||
+      queryLower.match(/\b(hackernews|reddit|twitter|discussion|comparison)\b/) ||
+      queryLower.match(/\b(experience|review|pros and cons|alternative)\b/)
+    ) {
+      if (availableSpecialists.has('community')) selected.push('community');
+    }
+
+    // ResearchExpert: Concept/definition queries
+    if (
+      queryLower.match(/\b(what is|explain|concept|theory|definition|history)\b/) ||
+      queryLower.match(/\b(wikipedia|arxiv|paper|academic|research)\b/) ||
+      queryLower.match(/\b(algorithm|protocol|standard|specification)\b/)
+    ) {
+      if (availableSpecialists.has('research')) selected.push('research');
+    }
+
+    // WebSearch: Fallback for general queries
+    if (selected.length === 0 || queryLower.match(/\b(search|find|latest|news|current|recent)\b/)) {
       if (availableSpecialists.has('web')) selected.push('web');
     }
 
-    // If still nothing, use all available
+    // If still nothing, use docs + web as sensible defaults
     if (selected.length === 0) {
-      selected.push(...availableSpecialists.keys());
+      if (availableSpecialists.has('docs')) selected.push('docs');
+      if (availableSpecialists.has('web')) selected.push('web');
     }
 
-    return selected;
+    // Limit to 3 specialists max for efficiency
+    return selected.slice(0, 3);
   }
 
   // ============================================================================
@@ -344,9 +371,11 @@ export class CoordinatorAgent {
 
     parts.push('');
     parts.push(`## Available Specialists`);
-    parts.push('- **web**: General web search (Serper, Brave, Tavily)');
-    parts.push('- **code**: Code-focused search (GitHub, StackOverflow, npm, PyPI)');
-    parts.push('- **docs**: Documentation search (Wikipedia, ArXiv, HackerNews, MDN)');
+    parts.push('- **docs**: Library documentation (Context7, npm, PyPI, crates.io, MDN) - "How do I use X?"');
+    parts.push('- **code**: Code examples (GitHub, StackOverflow) - "Show me code that does X"');
+    parts.push('- **community**: Discussions (HackerNews, Reddit, Twitter) - "What do people think of X?"');
+    parts.push('- **research**: Academic/reference (Wikipedia, ArXiv) - "What is X?"');
+    parts.push('- **web**: General search (Serper, Brave, Tavily) - Fallback for broad queries');
 
     parts.push('');
     parts.push(`## Your Task`);
@@ -649,11 +678,11 @@ export class CoordinatorAgent {
   private createFallbackPlan(query: string): ResearchPlan {
     return {
       strategy: 'Broad multi-source search',
-      rationale: 'Fallback plan using all available specialists',
+      rationale: 'Fallback plan using primary specialists',
       nextSteps: [
-        { specialist: 'web', query, priority: 1 },
+        { specialist: 'docs', query, priority: 1 },
         { specialist: 'code', query, priority: 2 },
-        { specialist: 'docs', query, priority: 3 },
+        { specialist: 'web', query, priority: 3 },
       ],
     };
   }

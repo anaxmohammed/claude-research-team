@@ -190,18 +190,36 @@ ConversationWatcher
 │   Queries unified knowledge base first
 │
 └── Coordinator
-    │   Plans research strategy
-    │   Dispatches to specialists
+    │   Plans research strategy, routes queries to specialists
+    │   Dispatches to specialists based on query intent
     │
-    ├── WebSearchAgent
+    ├── WebSearchAgent      ─ General internet search
     │   Serper, Brave, Tavily, DuckDuckGo
     │
-    ├── CodeExpertAgent
-    │   GitHub, StackOverflow, npm, PyPI, crates.io
+    ├── CodeExpertAgent     ─ Code examples & implementations
+    │   GitHub Code/Repos, StackOverflow
     │
-    └── DocsExpertAgent
-        Wikipedia, ArXiv, MDN, HackerNews, Reddit, Dev.to
+    ├── DocsExpertAgent     ─ Library documentation
+    │   Context7, npm, PyPI, crates.io, MDN, Dev.to
+    │
+    ├── CommunityExpertAgent ─ Discussions & opinions
+    │   HackerNews, Reddit, Twitter/X (via web search)
+    │
+    └── ResearchExpertAgent  ─ Academic & reference
+        Wikipedia, ArXiv
 ```
+
+### Specialist Agents & Tools
+
+| Agent | Domain | Tools | Best For |
+|-------|--------|-------|----------|
+| **WebSearch** | General | Serper*, Brave*, Tavily*, DuckDuckGo | Current events, general queries, fallback |
+| **CodeExpert** | Code | GitHub*, StackOverflow | Code examples, implementations, Q&A |
+| **DocsExpert** | Documentation | Context7, npm, PyPI, crates.io, MDN, Dev.to, Official Docs* | Library docs, package info, API references |
+| **CommunityExpert** | Discussions | HackerNews, Reddit, Twitter* | Opinions, comparisons, discussions |
+| **ResearchExpert** | Academic | Wikipedia, ArXiv | Concepts, definitions, research papers |
+
+*Requires API key (see Configuration)
 
 ### claude-mem Integration
 
@@ -289,14 +307,40 @@ Access at [http://localhost:3200](http://localhost:3200):
 
 ---
 
-## Free Tools (No API Key)
+## Integrated Tools
+
+### All 17+ Search Sources
+
+| Tool | Agent | API Key | Description |
+|------|-------|---------|-------------|
+| **Serper** | WebSearch | Required | Google search results via serper.dev |
+| **Brave** | WebSearch | Required | Brave Search API |
+| **Tavily** | WebSearch | Required | AI-optimized search |
+| **DuckDuckGo** | WebSearch | Free | Privacy-focused search |
+| **GitHub** | CodeExpert | Required | Code search & repository search |
+| **StackOverflow** | CodeExpert | Free | Programming Q&A via StackExchange API |
+| **Context7** | DocsExpert | Free | Deep library documentation with code examples |
+| **npm** | DocsExpert | Free | Node.js package registry |
+| **PyPI** | DocsExpert | Free | Python package index |
+| **crates.io** | DocsExpert | Free | Rust crate registry |
+| **MDN** | DocsExpert | Free | Mozilla Developer Network web docs |
+| **Dev.to** | DocsExpert | Free | Developer tutorials and guides |
+| **Official Docs** | DocsExpert | Serper | Site-restricted search for official docs |
+| **HackerNews** | CommunityExpert | Free | Tech news via Algolia API |
+| **Reddit** | CommunityExpert | Free | Discussions via old.reddit.com JSON |
+| **Twitter/X** | CommunityExpert | Serper/Brave | Site-restricted search (no Twitter API needed) |
+| **Wikipedia** | ResearchExpert | Free | Encyclopedic knowledge |
+| **ArXiv** | ResearchExpert | Free | Academic papers (CS, ML, Math, Physics) |
+
+### Free Tools (No API Key Required)
 
 These work out of the box:
 
-- **Search**: DuckDuckGo
-- **Code**: StackOverflow, npm, PyPI, crates.io
-- **Docs**: Wikipedia, ArXiv, HackerNews, Reddit, MDN, Dev.to
-- **Scraping**: Jina Reader
+- **General Search**: DuckDuckGo
+- **Code**: StackOverflow
+- **Documentation**: Context7, npm, PyPI, crates.io, MDN, Dev.to
+- **Community**: HackerNews, Reddit
+- **Research**: Wikipedia, ArXiv
 
 ---
 
@@ -340,11 +384,21 @@ POST /api/sessions                      # Create session
 claude-research-team/
 ├── src/
 │   ├── adapters/
-│   │   └── claude-mem-adapter.ts    # Unified knowledge access
+│   │   ├── claude-mem-adapter.ts    # Unified knowledge access
+│   │   └── context7-adapter.ts      # Context7 MCP client
 │   ├── agents/
-│   │   ├── coordinator.ts           # Research planning
+│   │   ├── coordinator.ts           # Research planning & routing
 │   │   ├── conversation-watcher.ts  # Opportunity detection
-│   │   └── specialists/             # WebSearch, CodeExpert, DocsExpert
+│   │   └── specialists/
+│   │       ├── index.ts             # Agent registry
+│   │       ├── base.ts              # Base specialist class
+│   │       ├── web-search.ts        # WebSearchAgent
+│   │       ├── code-expert.ts       # CodeExpertAgent
+│   │       ├── docs-expert.ts       # DocsExpertAgent
+│   │       ├── community-expert.ts  # CommunityExpertAgent
+│   │       ├── research-expert.ts   # ResearchExpertAgent
+│   │       ├── meta-evaluator.ts    # Result evaluation
+│   │       └── source-assessor.ts   # Source quality assessment
 │   ├── crew/
 │   │   ├── autonomous-crew.ts       # Multi-agent orchestration
 │   │   └── research-executor.ts     # Task execution

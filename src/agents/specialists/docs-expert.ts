@@ -1,8 +1,8 @@
 /**
  * Documentation Expert Specialist Agent
  *
- * Expert at finding documentation, academic papers, and discussions.
- * Tools: ArXiv, Wikipedia, HackerNews, Reddit, Official Documentation
+ * Expert at finding library documentation, package info, and API references.
+ * Tools: Context7, npm, PyPI, crates.io, MDN, Dev.to
  */
 
 import {
@@ -11,11 +11,12 @@ import {
   safeParseJson,
   type SearchResult,
 } from './base.js';
+import { getContext7Adapter } from '../../adapters/context7-adapter.js';
 
 export class DocsExpertAgent extends BaseSpecialistAgent {
   readonly name = 'DocsExpert';
   readonly domain = 'docs';
-  readonly description = 'Documentation search using Wikipedia, ArXiv, HackerNews, Reddit, and official docs';
+  readonly description = 'Library documentation using Context7, npm, PyPI, crates.io, MDN, and Dev.to';
 
   constructor() {
     super();
@@ -23,220 +24,283 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
   }
 
   private initializeTools(): void {
-    // Wikipedia
+    // Context7 - Deep library documentation (highest priority)
     this.registerTool({
-      name: 'wikipedia',
-      description: 'Wikipedia - encyclopedic knowledge',
-      search: this.searchWikipedia.bind(this),
+      name: 'context7',
+      description: 'Context7 - Curated library documentation with code examples',
+      search: this.searchContext7.bind(this),
     });
 
-    // ArXiv
+    // npm Registry (no API key required)
     this.registerTool({
-      name: 'arxiv',
-      description: 'ArXiv - academic papers in CS, Math, Physics',
-      search: this.searchArxiv.bind(this),
+      name: 'npm',
+      description: 'npm Registry - Node.js/JavaScript package documentation',
+      search: this.searchNpm.bind(this),
     });
 
-    // HackerNews (Algolia API - free)
+    // PyPI (no API key required)
     this.registerTool({
-      name: 'hackernews',
-      description: 'HackerNews - tech community discussions',
-      search: this.searchHackerNews.bind(this),
+      name: 'pypi',
+      description: 'PyPI - Python package documentation',
+      search: this.searchPyPi.bind(this),
     });
 
-    // MDN Web Docs (via Serper)
+    // crates.io (Rust packages - no API key required)
+    this.registerTool({
+      name: 'crates',
+      description: 'crates.io - Rust crate documentation',
+      search: this.searchCrates.bind(this),
+    });
+
+    // MDN Web Docs
     this.registerTool({
       name: 'mdn',
-      description: 'MDN Web Docs - web development documentation',
-      requiresApiKey: 'SERPER_API_KEY',
+      description: 'MDN Web Docs - Web platform documentation',
       search: this.searchMDN.bind(this),
     });
 
-    // Official Docs via Serper (targeted sites)
-    this.registerTool({
-      name: 'official_docs',
-      description: 'Official documentation sites',
-      requiresApiKey: 'SERPER_API_KEY',
-      search: this.searchOfficialDocs.bind(this),
-    });
-
-    // Dev.to
+    // Dev.to tutorials
     this.registerTool({
       name: 'devto',
-      description: 'Dev.to - developer community articles',
+      description: 'Dev.to - Developer tutorials and guides',
       search: this.searchDevTo.bind(this),
     });
 
-    // Reddit (via old.reddit.com JSON API - free)
+    // Official docs via Serper
     this.registerTool({
-      name: 'reddit',
-      description: 'Reddit - community discussions and Q&A',
-      search: this.searchReddit.bind(this),
+      name: 'official_docs',
+      description: 'Official documentation sites via web search',
+      requiresApiKey: 'SERPER_API_KEY',
+      search: this.searchOfficialDocs.bind(this),
     });
   }
 
   /**
-   * Search Wikipedia
+   * Search Context7 for library documentation
    */
-  private async searchWikipedia(query: string, maxResults: number): Promise<SearchResult[]> {
-    const url = new URL('https://en.wikipedia.org/w/api.php');
-    url.searchParams.set('action', 'query');
-    url.searchParams.set('list', 'search');
-    url.searchParams.set('srsearch', query);
-    url.searchParams.set('srlimit', String(maxResults));
-    url.searchParams.set('format', 'json');
-    url.searchParams.set('origin', '*');
+  private async searchContext7(query: string, maxResults: number): Promise<SearchResult[]> {
+    const adapter = getContext7Adapter();
 
-    const response = await fetchWithTimeout(url.toString(), {}, 10000);
+    try {
+      const result = await adapter.searchDocs(query);
+      if (!result) return [];
+
+      const { library, docs } = result;
+
+      // Context7 returns comprehensive docs - split into logical sections
+      const content = docs.content;
+      const results: SearchResult[] = [];
+
+      // Main documentation result
+      results.push({
+        title: `${library.name} Documentation`,
+        url: `https://context7.com/library/${library.id}`,
+        snippet: content.slice(0, 500),
+        source: 'context7',
+        relevance: 1.0, // Highest relevance - authoritative source
+        metadata: {
+          libraryId: library.id,
+          libraryName: library.name,
+          tokenCount: docs.tokenCount,
+          fullContent: content,
+        },
+      });
+
+      // If content is long, extract code examples as separate results
+      const codeBlocks = content.match(/```[\s\S]*?```/g) || [];
+      for (let i = 0; i < Math.min(codeBlocks.length, maxResults - 1); i++) {
+        const block = codeBlocks[i];
+        const firstLine = block.split('\n')[0].replace('```', '').trim();
+        results.push({
+          title: `${library.name} Code Example${firstLine ? `: ${firstLine}` : ''}`,
+          url: `https://context7.com/library/${library.id}#example-${i + 1}`,
+          snippet: block.slice(0, 300),
+          source: 'context7:example',
+          relevance: 0.95 - (i * 0.05),
+          metadata: {
+            libraryId: library.id,
+            exampleIndex: i,
+            language: firstLine || 'code',
+          },
+        });
+      }
+
+      return results.slice(0, maxResults);
+    } catch (error) {
+      this.logger.debug('Context7 search failed', { error });
+      return [];
+    }
+  }
+
+  /**
+   * Search npm Registry
+   */
+  private async searchNpm(query: string, maxResults: number): Promise<SearchResult[]> {
+    const response = await fetchWithTimeout(
+      `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=${maxResults}`,
+      {},
+      10000
+    );
 
     if (!response.ok) return [];
 
-    interface WikipediaResponse {
-      query?: {
-        search?: Array<{
-          title: string;
-          pageid: number;
-          snippet: string;
-          wordcount: number;
-        }>;
-      };
+    interface NpmResponse {
+      objects?: Array<{
+        package: {
+          name: string;
+          version: string;
+          description?: string;
+          keywords?: string[];
+          links?: {
+            npm?: string;
+            homepage?: string;
+            repository?: string;
+          };
+        };
+        score?: {
+          final: number;
+          detail: {
+            quality: number;
+            popularity: number;
+            maintenance: number;
+          };
+        };
+      }>;
     }
 
-    const data = await safeParseJson<WikipediaResponse>(response);
-    if (!data?.query?.search) return [];
+    const data = await safeParseJson<NpmResponse>(response);
+    if (!data?.objects) return [];
 
-    return data.query.search.map((item, i) => ({
-      title: item.title,
-      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(item.title.replace(/ /g, '_'))}`,
-      snippet: item.snippet.replace(/<[^>]*>/g, ''), // Strip HTML
-      source: 'wikipedia',
-      relevance: 1 - (i * 0.05),
+    return data.objects.map(obj => ({
+      title: `${obj.package.name}@${obj.package.version}`,
+      url: obj.package.links?.npm || `https://www.npmjs.com/package/${obj.package.name}`,
+      snippet: obj.package.description || obj.package.keywords?.join(', ') || 'npm package',
+      source: 'npm',
+      relevance: obj.score?.final || 0.7,
       metadata: {
-        pageId: item.pageid,
-        wordCount: item.wordcount,
+        version: obj.package.version,
+        keywords: obj.package.keywords,
+        quality: obj.score?.detail?.quality,
+        popularity: obj.score?.detail?.popularity,
+        homepage: obj.package.links?.homepage,
+        repository: obj.package.links?.repository,
       },
     }));
   }
 
   /**
-   * Search ArXiv
+   * Search PyPI
    */
-  private async searchArxiv(query: string, maxResults: number): Promise<SearchResult[]> {
-    // ArXiv API returns Atom XML - we'll parse the essentials
-    const url = new URL('http://export.arxiv.org/api/query');
-    url.searchParams.set('search_query', `all:${query}`);
-    url.searchParams.set('start', '0');
-    url.searchParams.set('max_results', String(maxResults));
-    url.searchParams.set('sortBy', 'relevance');
-
-    const response = await fetchWithTimeout(url.toString(), {}, 15000);
-
-    if (!response.ok) return [];
-
-    const text = await response.text();
-    return this.parseArxivXml(text);
-  }
-
-  /**
-   * Parse ArXiv Atom XML response
-   */
-  private parseArxivXml(xml: string): SearchResult[] {
-    const results: SearchResult[] = [];
-
-    // Simple regex-based parsing for ArXiv entries
-    const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
-    const titleRegex = /<title>([\s\S]*?)<\/title>/;
-    const summaryRegex = /<summary>([\s\S]*?)<\/summary>/;
-    const idRegex = /<id>([\s\S]*?)<\/id>/;
-    const authorRegex = /<author>[\s\S]*?<name>([\s\S]*?)<\/name>/g;
-
-    let match;
-    let position = 0;
-
-    while ((match = entryRegex.exec(xml)) !== null) {
-      const entry = match[1];
-
-      const titleMatch = entry.match(titleRegex);
-      const summaryMatch = entry.match(summaryRegex);
-      const idMatch = entry.match(idRegex);
-
-      if (titleMatch && idMatch) {
-        // Extract authors
-        const authors: string[] = [];
-        let authorMatch;
-        while ((authorMatch = authorRegex.exec(entry)) !== null) {
-          authors.push(authorMatch[1].trim());
-          if (authors.length >= 3) break;
-        }
-
-        const title = titleMatch[1].replace(/\s+/g, ' ').trim();
-        const summary = summaryMatch
-          ? summaryMatch[1].replace(/\s+/g, ' ').trim().slice(0, 300)
-          : '';
-        const arxivId = idMatch[1].trim();
-        const url = arxivId.startsWith('http') ? arxivId : `https://arxiv.org/abs/${arxivId.split('/').pop()}`;
-
-        results.push({
-          title,
-          url,
-          snippet: summary || `By ${authors.slice(0, 3).join(', ')}`,
-          source: 'arxiv',
-          relevance: 1 - (position * 0.05),
-          metadata: {
-            arxivId,
-            authors,
-          },
-        });
-
-        position++;
-      }
+  private async searchPyPi(query: string, maxResults: number): Promise<SearchResult[]> {
+    // PyPI search returns HTML, not JSON - use workarounds
+    // First try to get specific package if query looks like a package name
+    if (query.match(/^[a-zA-Z0-9_-]+$/)) {
+      const directResult = await this.searchPyPiPackage(query);
+      if (directResult.length > 0) return directResult;
     }
 
-    return results;
+    // Fall back to Serper with site:pypi.org
+    if (process.env.SERPER_API_KEY) {
+      return this.searchSerperSite('pypi.org', query, maxResults, 'pypi');
+    }
+
+    return [];
   }
 
   /**
-   * Search HackerNews (via Algolia API)
+   * Get specific PyPI package info
    */
-  private async searchHackerNews(query: string, maxResults: number): Promise<SearchResult[]> {
-    // Search stories
-    const url = new URL('https://hn.algolia.com/api/v1/search');
-    url.searchParams.set('query', query);
-    url.searchParams.set('tags', 'story');
-    url.searchParams.set('hitsPerPage', String(maxResults));
-
-    const response = await fetchWithTimeout(url.toString(), {}, 10000);
+  private async searchPyPiPackage(packageName: string): Promise<SearchResult[]> {
+    const response = await fetchWithTimeout(
+      `https://pypi.org/pypi/${packageName}/json`,
+      {},
+      10000
+    );
 
     if (!response.ok) return [];
 
-    interface HNResponse {
-      hits?: Array<{
-        title: string;
-        url?: string;
-        objectID: string;
-        author: string;
-        points: number;
-        num_comments: number;
-        created_at: string;
-        story_text?: string;
+    interface PyPiPackageResponse {
+      info: {
+        name: string;
+        version: string;
+        summary?: string;
+        keywords?: string;
+        home_page?: string;
+        project_urls?: Record<string, string>;
+        requires_python?: string;
+        author?: string;
+      };
+    }
+
+    const data = await safeParseJson<PyPiPackageResponse>(response);
+    if (!data?.info) return [];
+
+    return [{
+      title: `${data.info.name} ${data.info.version}`,
+      url: `https://pypi.org/project/${data.info.name}/`,
+      snippet: data.info.summary || data.info.keywords || 'Python package',
+      source: 'pypi',
+      relevance: 1.0,
+      metadata: {
+        version: data.info.version,
+        homepage: data.info.home_page,
+        requiresPython: data.info.requires_python,
+        author: data.info.author,
+        projectUrls: data.info.project_urls,
+      },
+    }];
+  }
+
+  /**
+   * Search crates.io (Rust packages)
+   */
+  private async searchCrates(query: string, maxResults: number): Promise<SearchResult[]> {
+    const url = new URL('https://crates.io/api/v1/crates');
+    url.searchParams.set('q', query);
+    url.searchParams.set('per_page', String(maxResults));
+
+    const response = await fetchWithTimeout(
+      url.toString(),
+      {
+        headers: {
+          'User-Agent': 'ResearchBot/1.0 (research tool)',
+          'Accept': 'application/json',
+        },
+      },
+      10000
+    );
+
+    if (!response.ok) return [];
+
+    interface CratesResponse {
+      crates?: Array<{
+        name: string;
+        newest_version: string;
+        description?: string;
+        downloads: number;
+        recent_downloads?: number;
+        repository?: string;
+        documentation?: string;
+        max_stable_version?: string;
       }>;
     }
 
-    const data = await safeParseJson<HNResponse>(response);
-    if (!data?.hits) return [];
+    const data = await safeParseJson<CratesResponse>(response);
+    if (!data?.crates) return [];
 
-    return data.hits.map((item, i) => ({
-      title: item.title,
-      url: item.url || `https://news.ycombinator.com/item?id=${item.objectID}`,
-      snippet: item.story_text?.slice(0, 200) ||
-               `${item.points} points, ${item.num_comments} comments by ${item.author}`,
-      source: 'hackernews',
+    return data.crates.map((crate, i) => ({
+      title: `${crate.name} v${crate.max_stable_version || crate.newest_version}`,
+      url: crate.documentation || `https://docs.rs/${crate.name}`,
+      snippet: crate.description || `${crate.downloads.toLocaleString()} downloads`,
+      source: 'crates',
       relevance: 1 - (i * 0.05),
       metadata: {
-        hnId: item.objectID,
-        points: item.points,
-        comments: item.num_comments,
-        author: item.author,
+        version: crate.max_stable_version || crate.newest_version,
+        downloads: crate.downloads,
+        recentDownloads: crate.recent_downloads,
+        repository: crate.repository,
+        docsUrl: crate.documentation || `https://docs.rs/${crate.name}`,
+        cratesUrl: `https://crates.io/crates/${crate.name}`,
       },
     }));
   }
@@ -255,7 +319,10 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
 
     if (!response.ok) {
       // Fall back to Serper
-      return this.searchSerperSite('developer.mozilla.org', query, maxResults, 'mdn');
+      if (process.env.SERPER_API_KEY) {
+        return this.searchSerperSite('developer.mozilla.org', query, maxResults, 'mdn');
+      }
+      return [];
     }
 
     interface MDNResponse {
@@ -277,57 +344,28 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
       snippet: item.summary,
       source: 'mdn',
       relevance: 1 - (i * 0.05),
+      metadata: {
+        slug: item.slug,
+        locale: item.locale,
+      },
     }));
-  }
-
-  /**
-   * Search Official Docs (multiple authoritative sites)
-   */
-  private async searchOfficialDocs(query: string, maxResults: number): Promise<SearchResult[]> {
-    // Target authoritative documentation sites
-    const sites = [
-      'docs.python.org',
-      'nodejs.org/docs',
-      'reactjs.org',
-      'vuejs.org',
-      'docs.rust-lang.org',
-      'go.dev/doc',
-      'typescriptlang.org',
-      'kubernetes.io/docs',
-      'docs.docker.com',
-      'docs.aws.amazon.com',
-    ];
-
-    const siteQuery = sites.map(s => `site:${s}`).join(' OR ');
-    const fullQuery = `(${siteQuery}) ${query}`;
-
-    return this.searchSerperSite('', fullQuery, maxResults, 'official_docs');
   }
 
   /**
    * Search Dev.to articles
    */
   private async searchDevTo(query: string, maxResults: number): Promise<SearchResult[]> {
-    const url = new URL('https://dev.to/api/articles');
-    url.searchParams.set('per_page', String(maxResults));
-    url.searchParams.set('tag', query.toLowerCase().replace(/\s+/g, ''));
+    // Use Dev.to's search API
+    const searchUrl = new URL('https://dev.to/search/feed_content');
+    searchUrl.searchParams.set('per_page', String(maxResults));
+    searchUrl.searchParams.set('search_fields', query);
+    searchUrl.searchParams.set('class_name', 'Article');
 
-    // First try tag search
-    let response = await fetchWithTimeout(url.toString(), {}, 10000);
-
-    // If no tag results, use search
-    if (!response.ok || (await response.clone().json() as unknown[]).length === 0) {
-      const searchUrl = new URL('https://dev.to/search/feed_content');
-      searchUrl.searchParams.set('per_page', String(maxResults));
-      searchUrl.searchParams.set('search_fields', query);
-      searchUrl.searchParams.set('class_name', 'Article');
-
-      response = await fetchWithTimeout(searchUrl.toString(), {}, 10000);
-    }
+    const response = await fetchWithTimeout(searchUrl.toString(), {}, 10000);
 
     if (!response.ok) return [];
 
-    interface DevToResponse {
+    interface DevToSearchResponse {
       result?: Array<{
         title: string;
         path: string;
@@ -347,11 +385,26 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
       };
       positive_reactions_count: number;
       comments_count: number;
+      tag_list: string[];
     }
 
     const data = await response.json();
 
-    // Handle both response formats
+    // Handle search response format
+    if ((data as DevToSearchResponse).result) {
+      return ((data as DevToSearchResponse).result || []).map((item, i) => ({
+        title: item.title,
+        url: `https://dev.to${item.path}`,
+        snippet: `Tutorial by ${item.user?.username || 'unknown'}`,
+        source: 'devto',
+        relevance: 1 - (i * 0.05),
+        metadata: {
+          author: item.user?.username,
+        },
+      }));
+    }
+
+    // Handle array response format (tag-based search)
     if (Array.isArray(data)) {
       return (data as DevToArticle[]).map((item, i) => ({
         title: item.title,
@@ -363,15 +416,8 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
           author: item.user?.username,
           reactions: item.positive_reactions_count,
           comments: item.comments_count,
+          tags: item.tag_list,
         },
-      }));
-    } else if ((data as DevToResponse).result) {
-      return ((data as DevToResponse).result || []).map((item, i) => ({
-        title: item.title,
-        url: `https://dev.to${item.path}`,
-        snippet: `By ${item.user?.username || 'unknown'}`,
-        source: 'devto',
-        relevance: 1 - (i * 0.05),
       }));
     }
 
@@ -379,70 +425,31 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
   }
 
   /**
-   * Search Reddit (via old.reddit.com JSON API)
+   * Search Official Documentation Sites
    */
-  private async searchReddit(query: string, maxResults: number): Promise<SearchResult[]> {
-    // Use Reddit's search JSON endpoint
-    const url = new URL('https://old.reddit.com/search.json');
-    url.searchParams.set('q', query);
-    url.searchParams.set('limit', String(Math.min(maxResults, 25)));
-    url.searchParams.set('sort', 'relevance');
-    url.searchParams.set('t', 'all'); // All time
+  private async searchOfficialDocs(query: string, maxResults: number): Promise<SearchResult[]> {
+    // Target authoritative documentation sites
+    const sites = [
+      'docs.python.org',
+      'nodejs.org/docs',
+      'react.dev',
+      'vuejs.org',
+      'docs.rust-lang.org',
+      'go.dev/doc',
+      'typescriptlang.org',
+      'kubernetes.io/docs',
+      'docs.docker.com',
+      'docs.aws.amazon.com',
+      'hono.dev',
+      'expressjs.com',
+      'fastify.dev',
+      'nextjs.org/docs',
+    ];
 
-    const response = await fetchWithTimeout(
-      url.toString(),
-      {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; ResearchBot/1.0)',
-          'Accept': 'application/json',
-        },
-      },
-      10000
-    );
+    const siteQuery = sites.map(s => `site:${s}`).join(' OR ');
+    const fullQuery = `(${siteQuery}) ${query}`;
 
-    if (!response.ok) return [];
-
-    interface RedditResponse {
-      data?: {
-        children?: Array<{
-          data: {
-            title: string;
-            permalink: string;
-            selftext?: string;
-            subreddit: string;
-            score: number;
-            num_comments: number;
-            author: string;
-            created_utc: number;
-            url?: string;
-          };
-        }>;
-      };
-    }
-
-    const data = await safeParseJson<RedditResponse>(response);
-    if (!data?.data?.children) return [];
-
-    return data.data.children.map((item, i) => {
-      const post = item.data;
-      const snippet = post.selftext
-        ? post.selftext.slice(0, 200).replace(/\n/g, ' ')
-        : `r/${post.subreddit} • ${post.score} points • ${post.num_comments} comments`;
-
-      return {
-        title: post.title,
-        url: `https://reddit.com${post.permalink}`,
-        snippet,
-        source: 'reddit',
-        relevance: 1 - (i * 0.05),
-        metadata: {
-          subreddit: post.subreddit,
-          score: post.score,
-          comments: post.num_comments,
-          author: post.author,
-        },
-      };
-    });
+    return this.searchSerperSite('', fullQuery, maxResults, 'official_docs');
   }
 
   /**

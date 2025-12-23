@@ -1,8 +1,8 @@
 /**
  * Code Expert Specialist Agent
  *
- * Expert at finding code-related resources - libraries, examples, solutions.
- * Tools: GitHub Code Search, StackOverflow, npm Registry, PyPI, crates.io
+ * Expert at finding code examples, implementations, and solutions.
+ * Tools: GitHub Code Search, StackOverflow
  */
 
 import {
@@ -15,7 +15,7 @@ import {
 export class CodeExpertAgent extends BaseSpecialistAgent {
   readonly name = 'CodeExpert';
   readonly domain = 'code';
-  readonly description = 'Code-focused search using GitHub, StackOverflow, npm, PyPI, and crates.io';
+  readonly description = 'Code-focused search using GitHub and StackOverflow';
 
   constructor() {
     super();
@@ -34,22 +34,8 @@ export class CodeExpertAgent extends BaseSpecialistAgent {
     // StackOverflow (uses StackExchange API - no key required for basic use)
     this.registerTool({
       name: 'stackoverflow',
-      description: 'StackOverflow - programming Q&A',
+      description: 'StackOverflow - programming Q&A with code solutions',
       search: this.searchStackOverflow.bind(this),
-    });
-
-    // npm Registry (no API key required)
-    this.registerTool({
-      name: 'npm',
-      description: 'npm Registry - Node.js packages',
-      search: this.searchNpm.bind(this),
-    });
-
-    // PyPI (no API key required)
-    this.registerTool({
-      name: 'pypi',
-      description: 'PyPI - Python packages',
-      search: this.searchPyPi.bind(this),
     });
 
     // Serper with site:github.com (fallback if no GitHub token)
@@ -58,13 +44,6 @@ export class CodeExpertAgent extends BaseSpecialistAgent {
       description: 'Google search for GitHub content',
       requiresApiKey: 'SERPER_API_KEY',
       search: this.searchSerperGitHub.bind(this),
-    });
-
-    // crates.io (Rust packages - no API key required)
-    this.registerTool({
-      name: 'crates',
-      description: 'crates.io - Rust packages and crates',
-      search: this.searchCrates.bind(this),
     });
   }
 
@@ -194,6 +173,7 @@ export class CodeExpertAgent extends BaseSpecialistAgent {
         answer_count: number;
         is_answered: boolean;
         tags: string[];
+        accepted_answer_id?: number;
       }>;
     }
 
@@ -212,168 +192,16 @@ export class CodeExpertAgent extends BaseSpecialistAgent {
         url: item.link,
         snippet: snippet || `Score: ${item.score}, ${item.answer_count} answers`,
         source: 'stackoverflow',
-        relevance: item.is_answered ? 0.9 : 0.6,
+        relevance: item.is_answered ? (item.accepted_answer_id ? 0.95 : 0.85) : 0.6,
         metadata: {
           score: item.score,
           answers: item.answer_count,
           tags: item.tags,
           answered: item.is_answered,
+          hasAccepted: !!item.accepted_answer_id,
         },
       };
     });
-  }
-
-  /**
-   * Search npm Registry
-   */
-  private async searchNpm(query: string, maxResults: number): Promise<SearchResult[]> {
-    const response = await fetchWithTimeout(
-      `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=${maxResults}`,
-      {},
-      10000
-    );
-
-    if (!response.ok) return [];
-
-    interface NpmResponse {
-      objects?: Array<{
-        package: {
-          name: string;
-          version: string;
-          description?: string;
-          keywords?: string[];
-          links?: {
-            npm?: string;
-            homepage?: string;
-            repository?: string;
-          };
-        };
-        score?: {
-          final: number;
-          detail: {
-            quality: number;
-            popularity: number;
-            maintenance: number;
-          };
-        };
-      }>;
-    }
-
-    const data = await safeParseJson<NpmResponse>(response);
-    if (!data?.objects) return [];
-
-    return data.objects.map(obj => ({
-      title: `${obj.package.name}@${obj.package.version}`,
-      url: obj.package.links?.npm || `https://www.npmjs.com/package/${obj.package.name}`,
-      snippet: obj.package.description || obj.package.keywords?.join(', ') || 'npm package',
-      source: 'npm',
-      relevance: obj.score?.final || 0.7,
-      metadata: {
-        version: obj.package.version,
-        keywords: obj.package.keywords,
-        quality: obj.score?.detail?.quality,
-        popularity: obj.score?.detail?.popularity,
-      },
-    }));
-  }
-
-  /**
-   * Search PyPI
-   */
-  private async searchPyPi(query: string, maxResults: number): Promise<SearchResult[]> {
-    // PyPI search returns HTML, not JSON - use workarounds
-    // by searching for specific packages if query looks like a package name
-    if (query.match(/^[a-zA-Z0-9_-]+$/)) {
-      return this.searchPyPiPackage(query, maxResults);
-    }
-
-    // Fall back to using Serper with site:pypi.org
-    if (process.env.SERPER_API_KEY) {
-      return this.searchSerperPyPi(query, maxResults);
-    }
-
-    return [];
-  }
-
-  /**
-   * Get specific PyPI package info
-   */
-  private async searchPyPiPackage(packageName: string, _maxResults: number): Promise<SearchResult[]> {
-    const response = await fetchWithTimeout(
-      `https://pypi.org/pypi/${packageName}/json`,
-      {},
-      10000
-    );
-
-    if (!response.ok) return [];
-
-    interface PyPiPackageResponse {
-      info: {
-        name: string;
-        version: string;
-        summary?: string;
-        keywords?: string;
-        home_page?: string;
-        project_urls?: Record<string, string>;
-      };
-    }
-
-    const data = await safeParseJson<PyPiPackageResponse>(response);
-    if (!data?.info) return [];
-
-    return [{
-      title: `${data.info.name} ${data.info.version}`,
-      url: `https://pypi.org/project/${data.info.name}/`,
-      snippet: data.info.summary || data.info.keywords || 'Python package',
-      source: 'pypi',
-      relevance: 1.0,
-      metadata: {
-        version: data.info.version,
-        homepage: data.info.home_page,
-      },
-    }];
-  }
-
-  /**
-   * Search PyPI via Serper
-   */
-  private async searchSerperPyPi(query: string, maxResults: number): Promise<SearchResult[]> {
-    const response = await fetchWithTimeout(
-      'https://google.serper.dev/search',
-      {
-        method: 'POST',
-        headers: {
-          'X-API-KEY': process.env.SERPER_API_KEY!,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          q: `site:pypi.org ${query}`,
-          num: maxResults,
-        }),
-      },
-      10000
-    );
-
-    if (!response.ok) return [];
-
-    interface SerperResponse {
-      organic?: Array<{
-        title: string;
-        link: string;
-        snippet: string;
-      }>;
-    }
-
-    const data = await safeParseJson<SerperResponse>(response);
-    if (!data?.organic) return [];
-
-    return data.organic.map((item, i) => ({
-      title: item.title,
-      url: item.link,
-      snippet: item.snippet,
-      source: 'serper:pypi',
-      relevance: 1 - (i * 0.05),
-    }));
   }
 
   /**
@@ -415,59 +243,6 @@ export class CodeExpertAgent extends BaseSpecialistAgent {
       snippet: item.snippet,
       source: 'serper:github',
       relevance: 1 - (i * 0.05),
-    }));
-  }
-
-  /**
-   * Search crates.io (Rust packages)
-   */
-  private async searchCrates(query: string, maxResults: number): Promise<SearchResult[]> {
-    const url = new URL('https://crates.io/api/v1/crates');
-    url.searchParams.set('q', query);
-    url.searchParams.set('per_page', String(maxResults));
-
-    const response = await fetchWithTimeout(
-      url.toString(),
-      {
-        headers: {
-          'User-Agent': 'ResearchBot/1.0 (research tool)',
-          'Accept': 'application/json',
-        },
-      },
-      10000
-    );
-
-    if (!response.ok) return [];
-
-    interface CratesResponse {
-      crates?: Array<{
-        name: string;
-        newest_version: string;
-        description?: string;
-        downloads: number;
-        recent_downloads?: number;
-        repository?: string;
-        documentation?: string;
-        max_stable_version?: string;
-      }>;
-    }
-
-    const data = await safeParseJson<CratesResponse>(response);
-    if (!data?.crates) return [];
-
-    return data.crates.map((crate, i) => ({
-      title: `${crate.name} v${crate.max_stable_version || crate.newest_version}`,
-      url: `https://crates.io/crates/${crate.name}`,
-      snippet: crate.description || `${crate.downloads.toLocaleString()} downloads`,
-      source: 'crates',
-      relevance: 1 - (i * 0.05),
-      metadata: {
-        version: crate.max_stable_version || crate.newest_version,
-        downloads: crate.downloads,
-        recentDownloads: crate.recent_downloads,
-        repository: crate.repository,
-        docs: crate.documentation,
-      },
     }));
   }
 }
