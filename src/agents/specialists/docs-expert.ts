@@ -94,7 +94,7 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
       // Main documentation result
       results.push({
         title: `${library.name} Documentation`,
-        url: `https://context7.com/library/${library.id}`,
+        url: `https://context7.com/${library.id.replace(/^\//, '')}`,
         snippet: content.slice(0, 500),
         source: 'context7',
         relevance: 1.0, // Highest relevance - authoritative source
@@ -113,7 +113,7 @@ export class DocsExpertAgent extends BaseSpecialistAgent {
         const firstLine = block.split('\n')[0].replace('```', '').trim();
         results.push({
           title: `${library.name} Code Example${firstLine ? `: ${firstLine}` : ''}`,
-          url: `https://context7.com/library/${library.id}#example-${i + 1}`,
+          url: `https://context7.com/${library.id.replace(/^\//, '')}#example-${i + 1}`,
           snippet: block.slice(0, 300),
           source: 'context7:example',
           relevance: 0.95 - (i * 0.05),
